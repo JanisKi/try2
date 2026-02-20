@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Chat</h2>
+
+<input id="prompt" style="width: 70%;" placeholder="Type message..." />
+<button id="send">Send</button>
+
+<pre id="out"></pre>
+
+<script>
+  // Get CSRF token from cookies (Django needs this for POST)
+  function getCookie(name) {
+    const v = document.cookie.match('(^|;)\\s*' + name + '\\s*=\\s*([^;]+)');
+    return v ? v.pop() : '';
+  }
+
+  document.getElementById("send").onclick = async () => {
+    const prompt = document.getElementById("prompt").value;
+
+    const r = await fetch("{% url 'chat_send' %}", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-CSRFToken": getCookie("csrftoken"),
+      },
+      body: JSON.stringify({ prompt }),
+    });
+
+    const data = await r.json();
+    document.getElementById("out").textContent += "\n\nYOU: " + prompt + "\nBOT: " + data.answer;
+  };
+</script>
+{% endblock %}
