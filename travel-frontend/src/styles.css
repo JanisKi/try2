@@ -1,0 +1,103 @@
+/* Global page styles (dark theme) */
+:root {
+  /* Basic colors */
+  --bg: #121212;          /* Page background */
+  --panel: #1a1a1a;       /* Panel background */
+  --border: #2f2f2f;      /* Borders */
+  --text: #f2f2f2;        /* Main text */
+  --muted: #bdbdbd;       /* Less important text */
+
+  /* Accent color for buttons/links */
+  --accent: #3b82f6;
+
+  /* Button colors */
+  --btn-bg: #242424;
+  --btn-bg-hover: #2c2c2c;
+}
+
+/* Make whole page dark */
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+}
+
+/* Generic container for main content */
+.container {
+  padding: 24px;
+}
+
+/* Top navigation bar layout */
+.navbar {
+  display: flex;
+  justify-content: space-between;
+  padding: 16px;
+  border-bottom: 1px solid var(--border);
+  background: #161616;
+}
+
+/* Left side tab buttons container */
+.nav-left {
+  display: flex;
+  gap: 8px;
+}
+
+/* Button styles used everywhere */
+.btn {
+  padding: 10px 16px;
+  border: 1px solid var(--border);
+  background: var(--btn-bg);
+  color: var(--text);
+  border-radius: 10px;
+  cursor: pointer;
+}
+
+/* Hover state */
+.btn:hover {
+  background: var(--btn-bg-hover);
+}
+
+/* Active tab style */
+.btn-active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent) inset;
+}
+
+/* Link styled like a button */
+.btn-link {
+  text-decoration: none;
+  display: inline-block;
+}
+
+/* Main panel box */
+.panel {
+  border: 1px solid var(--border);
+  background: var(--panel);
+  padding: 20px;
+  border-radius: 12px;
+  min-height: 520px;
+}
+
+/* Input field styles */
+.input {
+  padding: 10px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: #101010;
+  color: var(--text);
+  width: 100%;
+}
+
+/* Preformatted log output */
+.log {
+  margin-top: 16px;
+  white-space: pre-wrap;
+  color: var(--text);
+}
+
+/* Small muted helper text */
+.muted {
+  color: var(--muted);
+}
