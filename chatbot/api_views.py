@@ -10,6 +10,7 @@ from .services import extract_flight_intent, openrouter_chat  # Parsing + LLM
 from travel.services.iata import city_to_iata  # City -> IATA mapping
 from travel.services.amadeus import search_flights  # Amadeus search
 
+
 def build_preview(amadeus_json: dict, limit: int = 8):
     """
     Create a small preview list so we can show something quickly.
@@ -86,20 +87,26 @@ class ChatSendView(APIView):
                     destination=dest_iata,
                     departure_date=str(intent["departure_date"]),
                     adults=int(intent.get("adults") or 1),
-                    return_date=None,  # Chat widget can request return later
+                    return_date=str(intent["return_date"]) if intent.get("return_date") else None,
                 )
 
                 # Build flight widget payload for frontend
                 flight_widget = {
-                    "origin_city": intent.get("origin"),
-                    "destination_city": intent.get("destination"),
-                    "origin_iata": origin_iata,
-                    "destination_iata": dest_iata,
-                    "departure_date": str(intent["departure_date"]),
-                    "adults": int(intent.get("adults") or 1),
-                    "offers": build_preview(amadeus_json, limit=12),  # Preview offers
-                    "budget": intent.get("budget"),
-                }
+                        "origin_city": intent.get("origin"),
+                        "destination_city": intent.get("destination"),
+                        "origin_iata": origin_iata,
+                        "destination_iata": dest_iata,
+                        "departure_date": str(intent["departure_date"]),
+                        "adults": int(intent.get("adults") or 1),
+
+                        # ✅ NEW: pass these to frontend widget
+                        "return_date": str(intent["return_date"]) if intent.get("return_date") else "",
+                        "return_enabled": bool(intent.get("return_date")),
+                        "max_stops": intent.get("max_stops"),  # 0 means direct-only
+                        "budget": intent.get("budget"), 
+
+                        "offers": build_preview(amadeus_json, limit=12),
+                    }
 
                 # IMPORTANT: Use our own answer text (no Google Flights message)
                 answer = (
@@ -117,9 +124,22 @@ class ChatSendView(APIView):
         # If it is NOT a flight request, use OpenRouter normally
         if answer is None:
             try:
-                # Pull last messages (keep context short)
+                system = {
+                    "role": "system",
+                    "content": (
+                        "You are a travel assistant inside a flight-search app. "
+                        "Do NOT tell the user to use Google Flights/Skyscanner/Kayak. "
+                        "If the user asks for flights, ask for missing details (from/to/date/adults/return) "
+                        "or tell them to use the flight widget in the app."
+                    ),
+                }
+
+                # Keep context short (existing code)
                 recent = ChatMessage.objects.filter(user=request.user).order_by("-created_at")[:10]
                 messages = [{"role": m.role, "content": m.content} for m in reversed(recent)]
+
+                # Prepend system message
+                messages = [system] + messages
 
                 # Call OpenRouter
                 answer = openrouter_chat(messages)
