@@ -28,9 +28,25 @@ function priceNumber(offer) {
 }
 
 // Stops = segments - 1 (for outbound itinerary)
-function stopsForOffer(offer) {
-  const segs = offer?.itineraries?.[0]?.segments || [];
+// function stopsForOffer(offer) {
+//   const segs = offer?.itineraries?.[0]?.segments || [];
+//   return Math.max(0, segs.length - 1);
+// }
+// Stops for a single itinerary = segments - 1
+function stopsForItinerary(itinerary) {
+  const segs = itinerary?.segments || [];
   return Math.max(0, segs.length - 1);
+}
+
+// Max stops across all itineraries in the offer (outbound + return)
+// - One-way offer has 1 itinerary
+// - Roundtrip offer has 2 itineraries
+function maxStopsForOffer(offer) {
+  const itineraries = offer?.itineraries || [];
+  if (itineraries.length === 0) return 0;
+
+  // Compute stops per itinerary and return the maximum
+  return Math.max(...itineraries.map((it) => stopsForItinerary(it)));
 }
 
 // Build a Google Flights link (best “get tickets” MVP link)
@@ -95,12 +111,21 @@ export default function FlightWidget({ initial }) {
   const [adults, setAdults] = useState(initial?.adults || 1);
 
   // Optional return flight
-  const [returnEnabled, setReturnEnabled] = useState(false);
-  const [returnDate, setReturnDate] = useState("");
+  // Optional return flight (prefill from chat if provided)
+  const [returnEnabled, setReturnEnabled] = useState(Boolean(initial?.return_enabled));
+  const [returnDate, setReturnDate] = useState(initial?.return_date || "");
+
+  // Optional: prefill stops filter if chat asked "direct"
+  const [maxStops, setMaxStops] = useState(
+    initial?.max_stops === 0 ? "0" : "any"
+  );
 
   // Filter settings
-  const [maxStops, setMaxStops] = useState("any"); // any / 0 / 1 / 2
-  const [budget, setBudget] = useState(""); // e.g. 500 (EUR)
+  // const [maxStops, setMaxStops] = useState("any"); // any / 0 / 1 / 2
+  // Prefill budget if chat provided it
+  const [budget, setBudget] = useState(
+    initial?.budget !== null && initial?.budget !== undefined ? String(initial.budget) : ""
+  );
 
   // Results
   const [offers, setOffers] = useState(initial?.offers || []);
@@ -128,7 +153,10 @@ export default function FlightWidget({ initial }) {
     // Filter by stops
     if (maxStops !== "any") {
       const ms = Number(maxStops);
-      list = list.filter((o) => stopsForOffer(o) <= ms);
+
+      // ✅ Require BOTH outbound and return to be within max stops
+      // by checking the maximum stops among all itineraries
+      list = list.filter((o) => maxStopsForOffer(o) <= ms);
     }
 
     // Filter by budget (if user set it)
