@@ -62,18 +62,12 @@ def route_driving(start_lat, start_lon, end_lat, end_lon):
 
     IMPORTANT:
     ORS expects coordinates in [lon, lat] order.
-
-    Returns:
-        {
-            "distance": meters,
-            "duration": seconds
-        }
     """
     if not ORS_API_KEY:
         raise RuntimeError("ORS_API_KEY is missing")
 
     # IMPORTANT FIX:
-    # Public ORS POST directions endpoint must use /json
+    # ORS POST directions endpoint uses /json
     url = f"{ORS_BASE_URL}/v2/directions/driving-car/json"
 
     headers = {
@@ -84,14 +78,13 @@ def route_driving(start_lat, start_lon, end_lat, end_lon):
 
     body = {
         "coordinates": [
-            [start_lon, start_lat],  # ORS wants [lon, lat]
-            [end_lon, end_lat],      # ORS wants [lon, lat]
+            [start_lon, start_lat],
+            [end_lon, end_lat],
         ]
     }
 
     r = requests.post(url, json=body, headers=headers, timeout=30)
 
-    # Give clearer debug info if ORS rejects the request
     if not r.ok:
         try:
             error_body = r.json()
