@@ -1,165 +1,185 @@
 // travel-frontend/src/components/FlightWidget.jsx
 
-import { useEffect, useMemo, useState } from "react"; // React hooks
-import { api } from "../api"; // Axios wrapper with auto-refresh
+import { useEffect, useMemo, useState } from "react";
+import { api } from "../api";
 
-// Convert ISO duration like "PT2H40M" -> "2h 40m"
+// ----------------------------------------------------
+// Helper: convert ISO duration like "PT2H40M" -> "2h 40m"
+// ----------------------------------------------------
 function formatDuration(iso) {
   if (!iso) return "";
   const h = iso.match(/(\d+)H/)?.[1];
   const m = iso.match(/(\d+)M/)?.[1];
+
   const parts = [];
   if (h) parts.push(`${h}h`);
   if (m) parts.push(`${m}m`);
+
   return parts.join(" ") || iso;
 }
 
-// Make date/time more readable
+// ----------------------------------------------------
+// Helper: make date/time string more readable
+// ----------------------------------------------------
 function formatDateTime(dt) {
   if (!dt) return "";
   return dt.replace("T", " ");
 }
 
-// Safe numeric price for sorting
+// ----------------------------------------------------
+// Helper: safe numeric price for sorting
+// ----------------------------------------------------
 function priceNumber(offer) {
   const v = offer?.price?.total;
   const n = Number(v);
   return Number.isFinite(n) ? n : Number.POSITIVE_INFINITY;
 }
 
-// Stops = segments - 1 (for outbound itinerary)
-// function stopsForOffer(offer) {
-//   const segs = offer?.itineraries?.[0]?.segments || [];
-//   return Math.max(0, segs.length - 1);
-// }
-// Stops for a single itinerary = segments - 1
-function stopsForItinerary(itinerary) {
-  const segs = itinerary?.segments || [];
+// ----------------------------------------------------
+// Helper: stops = segments - 1 (for outbound itinerary)
+// ----------------------------------------------------
+function stopsForOffer(offer) {
+  const segs = offer?.itineraries?.[0]?.segments || [];
   return Math.max(0, segs.length - 1);
 }
 
-// Max stops across all itineraries in the offer (outbound + return)
-// - One-way offer has 1 itinerary
-// - Roundtrip offer has 2 itineraries
-function maxStopsForOffer(offer) {
-  const itineraries = offer?.itineraries || [];
-  if (itineraries.length === 0) return 0;
-
-  // Compute stops per itinerary and return the maximum
-  return Math.max(...itineraries.map((it) => stopsForItinerary(it)));
-}
-
-// Build a Google Flights link (best “get tickets” MVP link)
+// ----------------------------------------------------
+// Helper: build Google Flights search link
+// ----------------------------------------------------
 function googleFlightsLink(originText, destText, departDate, returnDate, adults) {
-  // A human-readable query string; Google Flights handles it well
   const q = returnDate
     ? `Flights from ${originText} to ${destText} on ${departDate} returning ${returnDate} for ${adults} adults`
-    : `Flights from ${originText} to ${destText} on ${departDate} for ${adults} adults`;
+    : `Flights from ${originText} to ${destText} on ${departDate} for ${adults} adults}`;
 
   return `https://www.google.com/travel/flights?q=${encodeURIComponent(q)}`;
 }
 
-// Render itinerary segments (works for outbound and return)
+// ----------------------------------------------------
+// Reusable itinerary block
+// ----------------------------------------------------
 function ItineraryBlock({ title, itinerary }) {
-  if (!itinerary) return null; // Nothing to show
+  if (!itinerary) return null;
 
-  const segments = itinerary.segments || []; // Each leg is a segment
+  const segments = itinerary.segments || [];
 
   return (
-    <div style={{ marginTop: 10 }}>
-      <b>{title}</b>
+    <div style={{ marginBottom: 16 }}>
+      <div>
+        <strong>{title}</strong>
+      </div>
 
-      {/* Duration */}
       {itinerary.duration && (
-        <div style={{ marginTop: 4 }}>
-          <b>Duration:</b> {formatDuration(itinerary.duration)}
+        <div style={{ marginTop: 6 }}>
+          Duration: {formatDuration(itinerary.duration)}
         </div>
       )}
 
-      {/* Segments */}
-      <div style={{ marginTop: 6 }}>
-        <b>Segments:</b>
-        <ul style={{ marginTop: 6 }}>
+      <div style={{ marginTop: 8 }}>
+        <strong>Segments:</strong>
+        <ul>
           {segments.map((s, i) => (
             <li key={i}>
-              <b>{s.departure?.iataCode}</b> ({formatDateTime(s.departure?.at)}) →{" "}
-              <b>{s.arrival?.iataCode}</b> ({formatDateTime(s.arrival?.at)}){" "}
-              | Carrier: <b>{s.carrierCode}</b> Flight: <b>{s.number}</b>
+              {s.departure?.iataCode} ({formatDateTime(s.departure?.at)}) →{" "}
+              {s.arrival?.iataCode} ({formatDateTime(s.arrival?.at)}) | Carrier:{" "}
+              {s.carrierCode} Flight: {s.number}
             </li>
           ))}
         </ul>
       </div>
 
-      {/* Stops count */}
-      <div style={{ marginTop: 4 }}>
-        <b>Stops:</b> {Math.max(0, segments.length - 1)}
-      </div>
+      <div>Stops: {Math.max(0, segments.length - 1)}</div>
     </div>
   );
 }
 
 export default function FlightWidget({ initial }) {
-  // Cached cities for dropdown suggestions
+  // ----------------------------------------------------
+  // Cached city list for autocomplete dropdown
+  // ----------------------------------------------------
   const [cities, setCities] = useState([]);
 
-  // Allow manual editing of FROM/TO (city or IATA)
+  // ----------------------------------------------------
+  // Editable search fields
+  // ----------------------------------------------------
   const [origin, setOrigin] = useState(initial?.origin_iata || initial?.origin_city || "");
-  const [destination, setDestination] = useState(initial?.destination_iata || initial?.destination_city || "");
-
-  // Search parameters
+  const [destination, setDestination] = useState(
+    initial?.destination_iata || initial?.destination_city || ""
+  );
   const [departureDate, setDepartureDate] = useState(initial?.departure_date || "");
   const [adults, setAdults] = useState(initial?.adults || 1);
 
-  // Optional return flight
-  // Optional return flight (prefill from chat if provided)
+  // ----------------------------------------------------
+  // Return flight controls
+  // ----------------------------------------------------
   const [returnEnabled, setReturnEnabled] = useState(Boolean(initial?.return_enabled));
   const [returnDate, setReturnDate] = useState(initial?.return_date || "");
 
-  // Optional: prefill stops filter if chat asked "direct"
+  // ----------------------------------------------------
+  // Search filters
+  // ----------------------------------------------------
   const [maxStops, setMaxStops] = useState(
     initial?.max_stops === 0 ? "0" : "any"
   );
-
-  // Filter settings
-  // const [maxStops, setMaxStops] = useState("any"); // any / 0 / 1 / 2
-  // Prefill budget if chat provided it
   const [budget, setBudget] = useState(
-    initial?.budget !== null && initial?.budget !== undefined ? String(initial.budget) : ""
+    initial?.budget != null ? String(initial.budget) : ""
   );
 
-  // Results
+  // ----------------------------------------------------
+  // Results / loading / errors
+  // ----------------------------------------------------
   const [offers, setOffers] = useState(initial?.offers || []);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState("");
 
-  // Load cached cities for dropdown (once on component mount)
+  // ----------------------------------------------------
+  // NEW: selected offer
+  // ----------------------------------------------------
+  const [selectedOffer, setSelectedOffer] = useState(null);
+
+  // ----------------------------------------------------
+  // NEW: generated trip plan returned by backend
+  // ----------------------------------------------------
+  const [generatedPlan, setGeneratedPlan] = useState(null);
+
+  // ----------------------------------------------------
+  // NEW: loading state for plan generation
+  // ----------------------------------------------------
+  const [planLoading, setPlanLoading] = useState(false);
+
+  // ----------------------------------------------------
+  // NEW: start address for route planning
+  // ----------------------------------------------------
+  const [startAddress, setStartAddress] = useState("Ogre Mednieku iela 23");
+
+  // ----------------------------------------------------
+  // Load city list once
+  // ----------------------------------------------------
   useEffect(() => {
     const loadCities = async () => {
       try {
         const r = await api.get("/travel/cities/");
         setCities(r.data?.cities || []);
       } catch {
-        // If it fails, we just proceed without dropdown suggestions
         setCities([]);
       }
     };
+
     loadCities();
   }, []);
 
-  // Filter + sort results
+  // ----------------------------------------------------
+  // Filter + sort offers locally
+  // ----------------------------------------------------
   const filteredSortedOffers = useMemo(() => {
     let list = [...offers];
 
     // Filter by stops
     if (maxStops !== "any") {
       const ms = Number(maxStops);
-
-      // ✅ Require BOTH outbound and return to be within max stops
-      // by checking the maximum stops among all itineraries
-      list = list.filter((o) => maxStopsForOffer(o) <= ms);
+      list = list.filter((o) => stopsForOffer(o) <= ms);
     }
 
-    // Filter by budget (if user set it)
+    // Filter by budget
     if (budget.trim()) {
       const b = Number(budget);
       if (Number.isFinite(b)) {
@@ -173,19 +193,23 @@ export default function FlightWidget({ initial }) {
     return list;
   }, [offers, maxStops, budget]);
 
-  // Run search (one-way or return)
+  // ----------------------------------------------------
+  // Search manually from widget
+  // ----------------------------------------------------
   const search = async () => {
-    setErr(""); // Clear old errors
-    setLoading(true); // Show loading state
+    setErr("");
+    setLoading(true);
+
+    // Clear selection + old plan when doing a new search
+    setSelectedOffer(null);
+    setGeneratedPlan(null);
 
     try {
-      // If return flight enabled, require return date
       if (returnEnabled && !returnDate) {
         setErr("Please choose a return date.");
         return;
       }
 
-      // Build request body (backend accepts city OR IATA)
       const body = {
         origin: origin,
         destination: destination,
@@ -193,18 +217,13 @@ export default function FlightWidget({ initial }) {
         adults: Number(adults),
       };
 
-      // Include return date if enabled
       if (returnEnabled) {
         body.return_date = returnDate;
       }
 
-      // Call backend manual flight search endpoint
       const r = await api.post("/travel/flights/search/", body);
-
-      // Amadeus offers are in r.data.data
       const newOffers = r.data?.data || [];
       setOffers(newOffers);
-
     } catch (e) {
       const msg = e?.response?.data?.detail;
       setErr(msg || "Flight search failed.");
@@ -213,7 +232,9 @@ export default function FlightWidget({ initial }) {
     }
   };
 
-  // ENTER triggers search (while focused in inputs)
+  // ----------------------------------------------------
+  // ENTER key triggers search
+  // ----------------------------------------------------
   const onKeyDown = (e) => {
     if (e.key === "Enter") {
       e.preventDefault();
@@ -221,26 +242,85 @@ export default function FlightWidget({ initial }) {
     }
   };
 
-  return (
-    <div style={{ marginTop: 12, padding: 12, border: "1px solid #2f2f2f", borderRadius: 10 }}>
-      <div style={{ marginBottom: 10 }}>
-        <b>Flight search widget</b>
-      </div>
+  // ----------------------------------------------------
+  // NEW: select one offer
+  // ----------------------------------------------------
+  function handleSelectOffer(offer) {
+    setSelectedOffer(offer);
+    setGeneratedPlan(null);
+  }
 
-      {/* ✅ City suggestion list (autocomplete dropdown but still editable) */}
-      <datalist id="citylist">
+  // ----------------------------------------------------
+  // NEW: clear selected offer
+  // ----------------------------------------------------
+  function handleClearSelection() {
+    setSelectedOffer(null);
+    setGeneratedPlan(null);
+  }
+
+  // ----------------------------------------------------
+  // NEW: generate plan from selected offer
+  // ----------------------------------------------------
+  async function handleGeneratePlan() {
+    if (!selectedOffer) {
+      alert("Please select a flight first.");
+      return;
+    }
+
+    try {
+      setPlanLoading(true);
+
+      const res = await api.post("/chat/generate-trip-plan/", {
+        selected_offer: selectedOffer,
+        origin,
+        destination,
+        departure_date: departureDate,
+        return_date: returnEnabled ? returnDate : null,
+        adults: Number(adults),
+        budget: budget ? Number(budget) : null,
+        max_stops: maxStops === "any" ? null : Number(maxStops),
+        start_address: startAddress,
+      });
+
+      setGeneratedPlan(res.data);
+    } catch (e) {
+      console.error(e);
+      alert("Failed to generate trip plan.");
+    } finally {
+      setPlanLoading(false);
+    }
+  }
+
+  // ----------------------------------------------------
+  // NEW: visible remaining budget
+  // ----------------------------------------------------
+  const remainingBudget = selectedOffer
+    ? Number(budget || 0) - Number(selectedOffer?.price?.total || 0)
+    : Number(budget || 0);
+
+  return (
+    <div>
+      <h2>Flight search widget</h2>
+
+      {/* ------------------------------------------------
+          City autocomplete list
+          ------------------------------------------------ */}
+      <datalist id="city-options">
         {cities.map((c, idx) => (
-          // value inserts city name; label shows IATA in some browsers
-          <option key={idx} value={c.city} label={c.iata} />
+          <option key={idx} value={c.city || c.iata_code}>
+            {c.city} ({c.iata_code})
+          </option>
         ))}
       </datalist>
 
-      {/* Controls */}
-      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+      {/* ------------------------------------------------
+          Search controls
+          ------------------------------------------------ */}
+      <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center" }}>
         <label>
           From:
           <input
-            list="citylist" // ✅ attach dropdown suggestions
+            list="city-options"
             value={origin}
             onChange={(e) => setOrigin(e.target.value)}
             onKeyDown={onKeyDown}
@@ -252,7 +332,7 @@ export default function FlightWidget({ initial }) {
         <label>
           To:
           <input
-            list="citylist" // ✅ attach dropdown suggestions
+            list="city-options"
             value={destination}
             onChange={(e) => setDestination(e.target.value)}
             onKeyDown={onKeyDown}
@@ -287,7 +367,11 @@ export default function FlightWidget({ initial }) {
 
         <label>
           Stops:
-          <select value={maxStops} onChange={(e) => setMaxStops(e.target.value)} style={{ marginLeft: 8 }}>
+          <select
+            value={maxStops}
+            onChange={(e) => setMaxStops(e.target.value)}
+            style={{ marginLeft: 8 }}
+          >
             <option value="any">Any</option>
             <option value="0">Direct only</option>
             <option value="1">Max 1</option>
@@ -306,12 +390,12 @@ export default function FlightWidget({ initial }) {
           />
         </label>
 
-        <label style={{ display: "flex", gap: 8, alignItems: "center" }}>
+        <label>
           <input
             type="checkbox"
             checked={returnEnabled}
             onChange={(e) => setReturnEnabled(e.target.checked)}
-          />
+          />{" "}
           Return flight
         </label>
 
@@ -328,63 +412,232 @@ export default function FlightWidget({ initial }) {
           </label>
         )}
 
-        <button onClick={search} disabled={loading} style={{ padding: "8px 14px" }}>
+        <button onClick={search}>
           {loading ? "Searching..." : "Search"}
         </button>
       </div>
 
-      {/* Ticket link (search link, not purchase link) */}
+      {/* ------------------------------------------------
+          Ticket link
+          ------------------------------------------------ */}
       {origin && destination && departureDate && (
-        <div style={{ marginTop: 12 }}>
-          <b>Get tickets:</b>{" "}
+        <p>
+          <strong>Get tickets:</strong>{" "}
           <a
-            href={googleFlightsLink(origin, destination, departureDate, returnEnabled ? returnDate : null, adults)}
+            href={googleFlightsLink(origin, destination, departureDate, returnEnabled ? returnDate : "", adults)}
             target="_blank"
             rel="noreferrer"
           >
             Open in Google Flights
           </a>
+        </p>
+      )}
+
+      {/* ------------------------------------------------
+          Error
+          ------------------------------------------------ */}
+      {err && <p style={{ color: "#ff8a8a" }}>{err}</p>}
+
+      {/* ------------------------------------------------
+          NEW: budget counter
+          ------------------------------------------------ */}
+      {budget && (
+        <div
+          style={{
+            marginTop: 12,
+            marginBottom: 16,
+            padding: "10px 12px",
+            background: "#1b1b1b",
+            borderRadius: "10px",
+            border: "1px solid #333",
+            fontWeight: "bold",
+          }}
+        >
+          Remaining budget:{" "}
+          {Number.isFinite(remainingBudget) ? remainingBudget.toFixed(2) : "-"} EUR
         </div>
       )}
 
-      {/* Error */}
-      {err && <div style={{ marginTop: 10 }}>{err}</div>}
+      {/* ------------------------------------------------
+          NEW: start address field
+          ------------------------------------------------ */}
+      <div style={{ marginBottom: 16 }}>
+        <label>
+          <strong>Start address:</strong>
+        </label>
+        <br />
+        <input
+          value={startAddress}
+          onChange={(e) => setStartAddress(e.target.value)}
+          placeholder="Enter your home/start address"
+          style={{ width: "420px", maxWidth: "100%", padding: "10px", marginTop: "8px" }}
+        />
+      </div>
 
-      {/* Results */}
+      {/* ------------------------------------------------
+          Results
+          ------------------------------------------------ */}
       {filteredSortedOffers.length > 0 && (
-        <div style={{ marginTop: 12 }}>
-          <b>Results (cheapest first)</b>
+        <div>
+          <h3>Results (cheapest first)</h3>
 
-          {filteredSortedOffers.slice(0, 10).map((offer, idx) => {
-            // Amadeus roundtrip offers have 2 itineraries:
-            // - itineraries[0] outbound
-            // - itineraries[1] return (if roundtrip)
-            const outbound = offer.itineraries?.[0];
-            const inbound = offer.itineraries?.[1];
+          {filteredSortedOffers
+            .filter((offer) => {
+              // Before selecting: show all offers
+              if (!selectedOffer) return true;
 
-            return (
-              <div
-                key={idx}
+              // After selecting: only keep the chosen one visible
+              return offer === selectedOffer;
+            })
+            .slice(0, 10)
+            .map((offer, idx) => {
+              const outbound = offer.itineraries?.[0];
+              const inbound = offer.itineraries?.[1];
+
+              return (
+                <div
+                  key={idx}
+                  style={{
+                    border: "1px solid #333",
+                    borderRadius: "12px",
+                    padding: "16px",
+                    marginBottom: "16px",
+                    background: "#111",
+                    position: "relative",
+                  }}
+                >
+                  {/* ----------------------------------------
+                      NEW: visible button in top-right
+                      ---------------------------------------- */}
+                  {!selectedOffer ? (
+                    <button
+                      onClick={() => handleSelectOffer(offer)}
+                      style={{
+                        position: "absolute",
+                        top: "16px",
+                        right: "16px",
+                        padding: "10px 16px",
+                        borderRadius: "8px",
+                        border: "none",
+                        background: "#2d6cdf",
+                        color: "white",
+                        cursor: "pointer",
+                        fontWeight: "bold",
+                      }}
+                    >
+                      Select
+                    </button>
+                  ) : (
+                    <button
+                      onClick={handleClearSelection}
+                      style={{
+                        position: "absolute",
+                        top: "16px",
+                        right: "16px",
+                        padding: "10px 16px",
+                        borderRadius: "8px",
+                        border: "none",
+                        background: "#666",
+                        color: "white",
+                        cursor: "pointer",
+                        fontWeight: "bold",
+                      }}
+                    >
+                      Change selection
+                    </button>
+                  )}
+
+                  <h3 style={{ marginTop: 0, marginRight: "160px" }}>
+                    {offer.price?.total} {offer.price?.currency}
+                  </h3>
+
+                  <ItineraryBlock title="Outbound" itinerary={outbound} />
+                  {inbound && <ItineraryBlock title="Return" itinerary={inbound} />}
+                </div>
+              );
+            })}
+
+          {/* --------------------------------------------
+              NEW: show Generate plan only after selection
+              -------------------------------------------- */}
+          {selectedOffer && (
+            <div style={{ marginTop: 20 }}>
+              <button
+                onClick={handleGeneratePlan}
+                disabled={planLoading}
                 style={{
-                  border: "1px solid #2f2f2f",
-                  padding: 12,
-                  borderRadius: 10,
-                  marginTop: 10,
+                  padding: "12px 18px",
+                  borderRadius: "8px",
+                  border: "none",
+                  background: "#1f8f4e",
+                  color: "white",
+                  cursor: "pointer",
+                  fontWeight: "bold",
                 }}
               >
-                {/* Price */}
-                <div style={{ fontSize: 18 }}>
-                  <b>{offer.price?.total} {offer.price?.currency}</b>
-                </div>
+                {planLoading ? "Generating plan..." : "Generate plan"}
+              </button>
+            </div>
+          )}
+        </div>
+      )}
 
-                {/* Outbound */}
-                <ItineraryBlock title="Outbound" itinerary={outbound} />
+      {/* ------------------------------------------------
+          Empty state
+          ------------------------------------------------ */}
+      {!loading && offers.length === 0 && !err && (
+        <p>No results yet. Enter details and search.</p>
+      )}
 
-                {/* Return (only if exists) */}
-                {inbound && <ItineraryBlock title="Return" itinerary={inbound} />}
-              </div>
-            );
-          })}
+      {/* ------------------------------------------------
+          NEW: generated plan section
+          ------------------------------------------------ */}
+      {generatedPlan && (
+        <div
+          style={{
+            marginTop: "24px",
+            border: "1px solid #2d2d2d",
+            borderRadius: "14px",
+            padding: "16px",
+            background: "#151515",
+          }}
+        >
+          <h2>Your trip plan</h2>
+
+          <p>
+            <strong>Start address:</strong> {generatedPlan.start_address || "-"}
+          </p>
+
+          <p>
+            <strong>Leave home at:</strong> {generatedPlan.leave_home_at || "-"}
+          </p>
+
+          <p>
+            <strong>Drive time to airport:</strong>{" "}
+            {generatedPlan.drive_minutes != null ? `${generatedPlan.drive_minutes} min` : "-"}
+          </p>
+
+          <p>
+            <strong>Flight:</strong> {generatedPlan.flight_summary || "-"}
+          </p>
+
+          <p>
+            <strong>Remaining budget:</strong>{" "}
+            {generatedPlan.remaining_budget != null
+              ? `${Number(generatedPlan.remaining_budget).toFixed(2)} EUR`
+              : "-"}
+          </p>
+
+          <p>
+            <strong>Route:</strong>{" "}
+            {generatedPlan.route_url ? (
+              <a href={generatedPlan.route_url} target="_blank" rel="noreferrer">
+                Open route
+              </a>
+            ) : (
+              "-"
+            )}
+          </p>
         </div>
       )}
     </div>
