@@ -61,13 +61,14 @@ def route_driving(start_lat, start_lon, end_lat, end_lon):
     Calculate a driving route between two points.
 
     IMPORTANT:
-    ORS expects coordinates in [lon, lat] order.
+    - ORS expects coordinates in [lon, lat] order
+    - We set radiuses to [-1, -1] so ORS can snap both points
+      to the nearest routable road without the default 350 m limit
     """
     if not ORS_API_KEY:
         raise RuntimeError("ORS_API_KEY is missing")
 
-    # IMPORTANT FIX:
-    # ORS POST directions endpoint uses /json
+    # ORS POST directions endpoint
     url = f"{ORS_BASE_URL}/v2/directions/driving-car/json"
 
     headers = {
@@ -78,9 +79,15 @@ def route_driving(start_lat, start_lon, end_lat, end_lon):
 
     body = {
         "coordinates": [
-            [start_lon, start_lat],
-            [end_lon, end_lat],
-        ]
+            [start_lon, start_lat],  # ORS wants [lon, lat]
+            [end_lon, end_lat],      # ORS wants [lon, lat]
+        ],
+
+        # IMPORTANT FIX:
+        # -1 means "maximum allowed snapping radius"
+        # This helps when the airport geocode lands slightly away
+        # from the road network or terminal access road.
+        "radiuses": [-1, -1],
     }
 
     r = requests.post(url, json=body, headers=headers, timeout=30)
