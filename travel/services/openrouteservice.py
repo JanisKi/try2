@@ -3,16 +3,16 @@
 import os
 import requests
 
-# Base URL for OpenRouteService
+# ---------------------------------------------------------
+# OpenRouteService base config
+# ---------------------------------------------------------
 ORS_BASE_URL = "https://api.openrouteservice.org"
-
-# Read API key from environment
 ORS_API_KEY = os.environ.get("ORS_API_KEY")
 
 
 def geocode_address(address: str):
     """
-    Convert an address into coordinates using OpenRouteService.
+    Convert a human-readable address into coordinates.
 
     Example input:
         "Ogre Mednieku iela 23"
@@ -20,40 +20,48 @@ def geocode_address(address: str):
     Returns:
         {
             "lat": 56.816,
-            "lon": 24.604
+            "lon": 24.604,
+            "label": "..."
         }
 
-    Or None if no match is found.
+    Returns None if no result was found.
     """
+    if not ORS_API_KEY:
+        raise RuntimeError("ORS_API_KEY is missing")
+
     url = f"{ORS_BASE_URL}/geocode/search"
 
     params = {
         "api_key": ORS_API_KEY,
         "text": address,
-        "size": 1,  # only need the best match
+        "size": 1,
     }
 
     r = requests.get(url, params=params, timeout=30)
     r.raise_for_status()
 
     data = r.json()
-
     features = data.get("features", [])
+
     if not features:
         return None
 
-    coords = features[0]["geometry"]["coordinates"]
+    feature = features[0]
+    coords = feature["geometry"]["coordinates"]  # ORS returns [lon, lat]
 
-    # ORS returns [lon, lat]
     return {
         "lon": coords[0],
         "lat": coords[1],
+        "label": feature.get("properties", {}).get("label", address),
     }
 
 
 def route_driving(start_lat, start_lon, end_lat, end_lon):
     """
-    Calculate driving route between two coordinate points.
+    Calculate a driving route between two points.
+
+    IMPORTANT:
+    ORS expects coordinates in [lon, lat] order.
 
     Returns:
         {
@@ -61,25 +69,47 @@ def route_driving(start_lat, start_lon, end_lat, end_lon):
             "duration": seconds
         }
     """
-    url = f"{ORS_BASE_URL}/v2/directions/driving-car"
+    if not ORS_API_KEY:
+        raise RuntimeError("ORS_API_KEY is missing")
+
+    # IMPORTANT FIX:
+    # Public ORS POST directions endpoint must use /json
+    url = f"{ORS_BASE_URL}/v2/directions/driving-car/json"
 
     headers = {
         "Authorization": ORS_API_KEY,
         "Content-Type": "application/json",
+        "Accept": "application/json",
     }
 
     body = {
         "coordinates": [
-            [start_lon, start_lat],
-            [end_lon, end_lat],
+            [start_lon, start_lat],  # ORS wants [lon, lat]
+            [end_lon, end_lat],      # ORS wants [lon, lat]
         ]
     }
 
     r = requests.post(url, json=body, headers=headers, timeout=30)
-    r.raise_for_status()
+
+    # Give clearer debug info if ORS rejects the request
+    if not r.ok:
+        try:
+            error_body = r.json()
+        except Exception:
+            error_body = r.text
+
+        raise requests.HTTPError(
+            f"ORS directions failed: {r.status_code} {error_body}",
+            response=r,
+        )
 
     data = r.json()
-    summary = data["routes"][0]["summary"]
+    routes = data.get("routes", [])
+
+    if not routes:
+        raise RuntimeError("ORS returned no routes")
+
+    summary = routes[0]["summary"]
 
     return {
         "distance": summary["distance"],

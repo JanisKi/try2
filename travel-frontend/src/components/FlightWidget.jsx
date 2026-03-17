@@ -19,7 +19,7 @@ function formatDuration(iso) {
 }
 
 // ----------------------------------------------------
-// Helper: make date/time string more readable
+// Helper: make datetime more readable
 // ----------------------------------------------------
 function formatDateTime(dt) {
   if (!dt) return "";
@@ -27,7 +27,7 @@ function formatDateTime(dt) {
 }
 
 // ----------------------------------------------------
-// Helper: safe numeric price for sorting
+// Helper: safe numeric sort
 // ----------------------------------------------------
 function priceNumber(offer) {
   const v = offer?.price?.total;
@@ -36,26 +36,35 @@ function priceNumber(offer) {
 }
 
 // ----------------------------------------------------
-// Helper: stops = segments - 1 (for outbound itinerary)
+// Stops for a single itinerary = segments - 1
 // ----------------------------------------------------
-function stopsForOffer(offer) {
-  const segs = offer?.itineraries?.[0]?.segments || [];
+function stopsForItinerary(itinerary) {
+  const segs = itinerary?.segments || [];
   return Math.max(0, segs.length - 1);
 }
 
 // ----------------------------------------------------
-// Helper: build Google Flights search link
+// Max stops across all itineraries
+// ----------------------------------------------------
+function maxStopsForOffer(offer) {
+  const itineraries = offer?.itineraries || [];
+  if (itineraries.length === 0) return 0;
+  return Math.max(...itineraries.map((it) => stopsForItinerary(it)));
+}
+
+// ----------------------------------------------------
+// Google Flights helper link
 // ----------------------------------------------------
 function googleFlightsLink(originText, destText, departDate, returnDate, adults) {
   const q = returnDate
     ? `Flights from ${originText} to ${destText} on ${departDate} returning ${returnDate} for ${adults} adults`
-    : `Flights from ${originText} to ${destText} on ${departDate} for ${adults} adults}`;
+    : `Flights from ${originText} to ${destText} on ${departDate} for ${adults} adults`;
 
   return `https://www.google.com/travel/flights?q=${encodeURIComponent(q)}`;
 }
 
 // ----------------------------------------------------
-// Reusable itinerary block
+// Reusable itinerary renderer
 // ----------------------------------------------------
 function ItineraryBlock({ title, itinerary }) {
   if (!itinerary) return null;
@@ -94,12 +103,12 @@ function ItineraryBlock({ title, itinerary }) {
 
 export default function FlightWidget({ initial }) {
   // ----------------------------------------------------
-  // Cached city list for autocomplete dropdown
+  // City suggestions
   // ----------------------------------------------------
   const [cities, setCities] = useState([]);
 
   // ----------------------------------------------------
-  // Editable search fields
+  // Search fields
   // ----------------------------------------------------
   const [origin, setOrigin] = useState(initial?.origin_iata || initial?.origin_city || "");
   const [destination, setDestination] = useState(
@@ -109,50 +118,44 @@ export default function FlightWidget({ initial }) {
   const [adults, setAdults] = useState(initial?.adults || 1);
 
   // ----------------------------------------------------
-  // Return flight controls
+  // Return flight fields
   // ----------------------------------------------------
   const [returnEnabled, setReturnEnabled] = useState(Boolean(initial?.return_enabled));
   const [returnDate, setReturnDate] = useState(initial?.return_date || "");
 
   // ----------------------------------------------------
-  // Search filters
+  // Filters
   // ----------------------------------------------------
   const [maxStops, setMaxStops] = useState(
     initial?.max_stops === 0 ? "0" : "any"
   );
   const [budget, setBudget] = useState(
-    initial?.budget != null ? String(initial.budget) : ""
+    initial?.budget !== null && initial?.budget !== undefined ? String(initial.budget) : ""
   );
 
   // ----------------------------------------------------
-  // Results / loading / errors
+  // Results
   // ----------------------------------------------------
   const [offers, setOffers] = useState(initial?.offers || []);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState("");
 
   // ----------------------------------------------------
-  // NEW: selected offer
+  // Selected offer / generated plan
   // ----------------------------------------------------
   const [selectedOffer, setSelectedOffer] = useState(null);
-
-  // ----------------------------------------------------
-  // NEW: generated trip plan returned by backend
-  // ----------------------------------------------------
   const [generatedPlan, setGeneratedPlan] = useState(null);
-
-  // ----------------------------------------------------
-  // NEW: loading state for plan generation
-  // ----------------------------------------------------
   const [planLoading, setPlanLoading] = useState(false);
 
   // ----------------------------------------------------
-  // NEW: start address for route planning
+  // IMPORTANT:
+  // Start address is now BLANK by default.
+  // We do not hardcode Ogre anymore.
   // ----------------------------------------------------
-  const [startAddress, setStartAddress] = useState("Ogre Mednieku iela 23");
+  const [startAddress, setStartAddress] = useState("");
 
   // ----------------------------------------------------
-  // Load city list once
+  // Load cities once
   // ----------------------------------------------------
   useEffect(() => {
     const loadCities = async () => {
@@ -168,18 +171,16 @@ export default function FlightWidget({ initial }) {
   }, []);
 
   // ----------------------------------------------------
-  // Filter + sort offers locally
+  // Filter + sort offers
   // ----------------------------------------------------
   const filteredSortedOffers = useMemo(() => {
     let list = [...offers];
 
-    // Filter by stops
     if (maxStops !== "any") {
       const ms = Number(maxStops);
-      list = list.filter((o) => stopsForOffer(o) <= ms);
+      list = list.filter((o) => maxStopsForOffer(o) <= ms);
     }
 
-    // Filter by budget
     if (budget.trim()) {
       const b = Number(budget);
       if (Number.isFinite(b)) {
@@ -187,20 +188,17 @@ export default function FlightWidget({ initial }) {
       }
     }
 
-    // Sort cheapest first
     list.sort((a, b) => priceNumber(a) - priceNumber(b));
-
     return list;
   }, [offers, maxStops, budget]);
 
   // ----------------------------------------------------
-  // Search manually from widget
+  // Manual search from widget
   // ----------------------------------------------------
   const search = async () => {
     setErr("");
     setLoading(true);
 
-    // Clear selection + old plan when doing a new search
     setSelectedOffer(null);
     setGeneratedPlan(null);
 
@@ -211,8 +209,8 @@ export default function FlightWidget({ initial }) {
       }
 
       const body = {
-        origin: origin,
-        destination: destination,
+        origin,
+        destination,
         departure_date: departureDate,
         adults: Number(adults),
       };
@@ -233,7 +231,7 @@ export default function FlightWidget({ initial }) {
   };
 
   // ----------------------------------------------------
-  // ENTER key triggers search
+  // ENTER triggers search
   // ----------------------------------------------------
   const onKeyDown = (e) => {
     if (e.key === "Enter") {
@@ -243,32 +241,41 @@ export default function FlightWidget({ initial }) {
   };
 
   // ----------------------------------------------------
-  // NEW: select one offer
+  // Select one offer
   // ----------------------------------------------------
   function handleSelectOffer(offer) {
     setSelectedOffer(offer);
     setGeneratedPlan(null);
+    setErr("");
   }
 
   // ----------------------------------------------------
-  // NEW: clear selected offer
+  // Change selected offer
   // ----------------------------------------------------
   function handleClearSelection() {
     setSelectedOffer(null);
     setGeneratedPlan(null);
+    setErr("");
   }
 
   // ----------------------------------------------------
-  // NEW: generate plan from selected offer
+  // Generate trip plan
+  // If no start address is given, show clear inline prompt.
   // ----------------------------------------------------
   async function handleGeneratePlan() {
     if (!selectedOffer) {
-      alert("Please select a flight first.");
+      setErr("Please select a flight first.");
+      return;
+    }
+
+    if (!startAddress.trim()) {
+      setErr("What is your starting location? Please enter your address first.");
       return;
     }
 
     try {
       setPlanLoading(true);
+      setErr("");
 
       const res = await api.post("/chat/generate-trip-plan/", {
         selected_offer: selectedOffer,
@@ -279,20 +286,20 @@ export default function FlightWidget({ initial }) {
         adults: Number(adults),
         budget: budget ? Number(budget) : null,
         max_stops: maxStops === "any" ? null : Number(maxStops),
-        start_address: startAddress,
+        start_address: startAddress.trim(),
       });
 
       setGeneratedPlan(res.data);
     } catch (e) {
-      console.error(e);
-      alert("Failed to generate trip plan.");
+      const msg = e?.response?.data?.detail;
+      setErr(msg || "Failed to generate trip plan.");
     } finally {
       setPlanLoading(false);
     }
   }
 
   // ----------------------------------------------------
-  // NEW: visible remaining budget
+  // Visible remaining budget
   // ----------------------------------------------------
   const remainingBudget = selectedOffer
     ? Number(budget || 0) - Number(selectedOffer?.price?.total || 0)
@@ -302,9 +309,7 @@ export default function FlightWidget({ initial }) {
     <div>
       <h2>Flight search widget</h2>
 
-      {/* ------------------------------------------------
-          City autocomplete list
-          ------------------------------------------------ */}
+      {/* City suggestions */}
       <datalist id="city-options">
         {cities.map((c, idx) => (
           <option key={idx} value={c.city || c.iata_code}>
@@ -313,9 +318,7 @@ export default function FlightWidget({ initial }) {
         ))}
       </datalist>
 
-      {/* ------------------------------------------------
-          Search controls
-          ------------------------------------------------ */}
+      {/* Controls */}
       <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center" }}>
         <label>
           From:
@@ -417,9 +420,7 @@ export default function FlightWidget({ initial }) {
         </button>
       </div>
 
-      {/* ------------------------------------------------
-          Ticket link
-          ------------------------------------------------ */}
+      {/* Ticket link */}
       {origin && destination && departureDate && (
         <p>
           <strong>Get tickets:</strong>{" "}
@@ -433,14 +434,10 @@ export default function FlightWidget({ initial }) {
         </p>
       )}
 
-      {/* ------------------------------------------------
-          Error
-          ------------------------------------------------ */}
+      {/* Error */}
       {err && <p style={{ color: "#ff8a8a" }}>{err}</p>}
 
-      {/* ------------------------------------------------
-          NEW: budget counter
-          ------------------------------------------------ */}
+      {/* Budget counter */}
       {budget && (
         <div
           style={{
@@ -458,9 +455,7 @@ export default function FlightWidget({ initial }) {
         </div>
       )}
 
-      {/* ------------------------------------------------
-          NEW: start address field
-          ------------------------------------------------ */}
+      {/* Start address */}
       <div style={{ marginBottom: 16 }}>
         <label>
           <strong>Start address:</strong>
@@ -469,24 +464,19 @@ export default function FlightWidget({ initial }) {
         <input
           value={startAddress}
           onChange={(e) => setStartAddress(e.target.value)}
-          placeholder="Enter your home/start address"
+          placeholder="Enter your starting location"
           style={{ width: "420px", maxWidth: "100%", padding: "10px", marginTop: "8px" }}
         />
       </div>
 
-      {/* ------------------------------------------------
-          Results
-          ------------------------------------------------ */}
+      {/* Results */}
       {filteredSortedOffers.length > 0 && (
         <div>
           <h3>Results (cheapest first)</h3>
 
           {filteredSortedOffers
             .filter((offer) => {
-              // Before selecting: show all offers
               if (!selectedOffer) return true;
-
-              // After selecting: only keep the chosen one visible
               return offer === selectedOffer;
             })
             .slice(0, 10)
@@ -506,9 +496,6 @@ export default function FlightWidget({ initial }) {
                     position: "relative",
                   }}
                 >
-                  {/* ----------------------------------------
-                      NEW: visible button in top-right
-                      ---------------------------------------- */}
                   {!selectedOffer ? (
                     <button
                       onClick={() => handleSelectOffer(offer)}
@@ -557,9 +544,6 @@ export default function FlightWidget({ initial }) {
               );
             })}
 
-          {/* --------------------------------------------
-              NEW: show Generate plan only after selection
-              -------------------------------------------- */}
           {selectedOffer && (
             <div style={{ marginTop: 20 }}>
               <button
@@ -582,16 +566,11 @@ export default function FlightWidget({ initial }) {
         </div>
       )}
 
-      {/* ------------------------------------------------
-          Empty state
-          ------------------------------------------------ */}
       {!loading && offers.length === 0 && !err && (
         <p>No results yet. Enter details and search.</p>
       )}
 
-      {/* ------------------------------------------------
-          NEW: generated plan section
-          ------------------------------------------------ */}
+      {/* Generated plan */}
       {generatedPlan && (
         <div
           style={{
@@ -629,10 +608,21 @@ export default function FlightWidget({ initial }) {
           </p>
 
           <p>
-            <strong>Route:</strong>{" "}
-            {generatedPlan.route_url ? (
-              <a href={generatedPlan.route_url} target="_blank" rel="noreferrer">
-                Open route
+            <strong>Google Maps route:</strong>{" "}
+            {generatedPlan.route_google_maps_url ? (
+              <a href={generatedPlan.route_google_maps_url} target="_blank" rel="noreferrer">
+                Open in Google Maps
+              </a>
+            ) : (
+              "-"
+            )}
+          </p>
+
+          <p>
+            <strong>Waze route:</strong>{" "}
+            {generatedPlan.route_waze_url ? (
+              <a href={generatedPlan.route_waze_url} target="_blank" rel="noreferrer">
+                Open in Waze
               </a>
             ) : (
               "-"
