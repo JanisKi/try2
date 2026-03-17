@@ -1,12 +1,23 @@
 # travel/services/amadeus.py
 
-import os  # Read environment variables
-import requests  # HTTP requests
+import os
+import requests
+
+
+# ---------------------------------------------------------
+# Amadeus environment config
+# ---------------------------------------------------------
+
+AMADEUS_BASE_URL = "https://test.api.amadeus.com"
+
 
 def get_access_token():
     """
-    Get Amadeus OAuth token.
-    Reused by flight search and location search.
+    Get OAuth token from Amadeus.
+
+    This token is needed for:
+    - locations search
+    - flight offers search
     """
     api_key = os.environ.get("AMADEUS_API_KEY")
     api_secret = os.environ.get("AMADEUS_API_SECRET")
@@ -14,8 +25,7 @@ def get_access_token():
     if not api_key or not api_secret:
         raise RuntimeError("AMADEUS_API_KEY / AMADEUS_API_SECRET missing")
 
-    base_url = "https://test.api.amadeus.com"
-    token_url = f"{base_url}/v1/security/oauth2/token"
+    token_url = f"{AMADEUS_BASE_URL}/v1/security/oauth2/token"
 
     token_resp = requests.post(
         token_url,
@@ -27,20 +37,24 @@ def get_access_token():
         timeout=30,
     )
     token_resp.raise_for_status()
+
     return token_resp.json()["access_token"]
+
 
 def search_locations(keyword: str, limit: int = 5):
     """
-    Use Amadeus Locations API to resolve a city/airport name to IATA codes.
+    Resolve a user-entered city/airport name into Amadeus locations.
+
+    Example:
+        "Paris"
+
     Returns a list of location objects.
     """
-    base_url = "https://test.api.amadeus.com"
     token = get_access_token()
 
-    url = f"{base_url}/v1/reference-data/locations"
+    url = f"{AMADEUS_BASE_URL}/v1/reference-data/locations"
     headers = {"Authorization": f"Bearer {token}"}
 
-    # subType: CITY and AIRPORT gives best results
     params = {
         "keyword": keyword,
         "subType": "CITY,AIRPORT",
@@ -49,64 +63,86 @@ def search_locations(keyword: str, limit: int = 5):
 
     r = requests.get(url, headers=headers, params=params, timeout=30)
     r.raise_for_status()
+
     return r.json().get("data", [])
 
-def search_flights(origin: str, destination: str, departure_date: str, adults: int = 1, return_date: str | None = None):
+
+def pick_first_airport_iata(locations: list[dict]) -> str | None:
+    """
+    Prefer a real AIRPORT code over a CITY code.
+
+    This is useful when Flight Offers Search fails with a city code
+    like PAR and we want to retry with CDG/ORY/etc.
+    """
+    for loc in locations:
+        if loc.get("subType") == "AIRPORT" and loc.get("iataCode"):
+            return loc["iataCode"].upper()
+
+    return None
+
+
+def search_flights(
+    origin: str,
+    destination: str,
+    departure_date: str,
+    adults: int = 1,
+    return_date: str | None = None,
+):
     """
     Search flights using Amadeus Flight Offers Search.
-    - origin/destination are IATA codes (e.g. RIX, AMS)
-    - departure_date is YYYY-MM-DD
-    - return_date is optional (YYYY-MM-DD) for roundtrip
+
+    Inputs:
+    - origin: IATA code (airport or city)
+    - destination: IATA code (airport or city)
+    - departure_date: YYYY-MM-DD
+    - adults: number of adult passengers
+    - return_date: optional YYYY-MM-DD
+
+    Returns:
+    - parsed JSON response
+
+    Raises:
+    - requests.HTTPError if Amadeus returns an error
     """
+    access_token = get_access_token()
 
-    # Read keys from environment (.env should load into env variables)
-    api_key = os.environ.get("AMADEUS_API_KEY")
-    api_secret = os.environ.get("AMADEUS_API_SECRET")
+    offers_url = f"{AMADEUS_BASE_URL}/v2/shopping/flight-offers"
 
-    # Basic safety check
-    if not api_key or not api_secret:
-        raise RuntimeError("AMADEUS_API_KEY / AMADEUS_API_SECRET missing")
-
-    # Choose base URL depending on your setup (example uses test environment)
-    base_url = "https://test.api.amadeus.com"
-
-    # 1) Get OAuth token from Amadeus
-    token_url = f"{base_url}/v1/security/oauth2/token"
-    token_resp = requests.post(
-        token_url,
-        data={
-            "grant_type": "client_credentials",
-            "client_id": api_key,
-            "client_secret": api_secret,
-        },
-        timeout=30,
-    )
-    token_resp.raise_for_status()
-    access_token = token_resp.json()["access_token"]
-
-    # 2) Call flight offers search
-    offers_url = f"{base_url}/v2/shopping/flight-offers"
-
-    # Request parameters
     params = {
         "originLocationCode": origin,
         "destinationLocationCode": destination,
         "departureDate": departure_date,
         "adults": adults,
         "currencyCode": "EUR",
-        "max": 30,  # Return up to 30 offers (frontend can filter/sort)
+        "max": 30,
     }
 
-    # Add return date only if user requested roundtrip
+    # Only send returnDate if it exists
     if return_date:
         params["returnDate"] = return_date
 
-    # Auth headers
-    headers = {"Authorization": f"Bearer {access_token}"}
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+    }
 
-    # Make request
-    offers_resp = requests.get(offers_url, headers=headers, params=params, timeout=30)
-    offers_resp.raise_for_status()
+    offers_resp = requests.get(
+        offers_url,
+        headers=headers,
+        params=params,
+        timeout=30,
+    )
 
-    # Return full JSON response
+    # If request failed, include Amadeus response body in the Python exception.
+    # This makes debugging MUCH easier than a generic 400.
+    if not offers_resp.ok:
+        try:
+            error_body = offers_resp.json()
+        except Exception:
+            error_body = offers_resp.text
+
+        raise requests.HTTPError(
+            f"Amadeus flight search failed: {offers_resp.status_code} {error_body}",
+            response=offers_resp,
+        )
+
     return offers_resp.json()
