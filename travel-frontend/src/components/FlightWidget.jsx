@@ -3,58 +3,38 @@
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api";
 
-// ----------------------------------------------------
-// Helper: convert ISO duration like "PT2H40M" -> "2h 40m"
-// ----------------------------------------------------
 function formatDuration(iso) {
   if (!iso) return "";
   const h = iso.match(/(\d+)H/)?.[1];
   const m = iso.match(/(\d+)M/)?.[1];
-
   const parts = [];
   if (h) parts.push(`${h}h`);
   if (m) parts.push(`${m}m`);
-
   return parts.join(" ") || iso;
 }
 
-// ----------------------------------------------------
-// Helper: make datetime more readable
-// ----------------------------------------------------
 function formatDateTime(dt) {
   if (!dt) return "";
   return dt.replace("T", " ");
 }
 
-// ----------------------------------------------------
-// Helper: safe numeric sort
-// ----------------------------------------------------
 function priceNumber(offer) {
   const v = offer?.price?.total;
   const n = Number(v);
   return Number.isFinite(n) ? n : Number.POSITIVE_INFINITY;
 }
 
-// ----------------------------------------------------
-// Stops for a single itinerary = segments - 1
-// ----------------------------------------------------
 function stopsForItinerary(itinerary) {
   const segs = itinerary?.segments || [];
   return Math.max(0, segs.length - 1);
 }
 
-// ----------------------------------------------------
-// Max stops across all itineraries
-// ----------------------------------------------------
 function maxStopsForOffer(offer) {
   const itineraries = offer?.itineraries || [];
   if (itineraries.length === 0) return 0;
   return Math.max(...itineraries.map((it) => stopsForItinerary(it)));
 }
 
-// ----------------------------------------------------
-// Google Flights helper link
-// ----------------------------------------------------
 function googleFlightsLink(originText, destText, departDate, returnDate, adults) {
   const q = returnDate
     ? `Flights from ${originText} to ${destText} on ${departDate} returning ${returnDate} for ${adults} adults`
@@ -63,9 +43,6 @@ function googleFlightsLink(originText, destText, departDate, returnDate, adults)
   return `https://www.google.com/travel/flights?q=${encodeURIComponent(q)}`;
 }
 
-// ----------------------------------------------------
-// Reusable itinerary renderer
-// ----------------------------------------------------
 function ItineraryBlock({ title, itinerary }) {
   if (!itinerary) return null;
 
@@ -73,9 +50,7 @@ function ItineraryBlock({ title, itinerary }) {
 
   return (
     <div style={{ marginBottom: 16 }}>
-      <div>
-        <strong>{title}</strong>
-      </div>
+      <div><strong>{title}</strong></div>
 
       {itinerary.duration && (
         <div style={{ marginTop: 6 }}>
@@ -101,15 +76,31 @@ function ItineraryBlock({ title, itinerary }) {
   );
 }
 
+function TransitSteps({ steps }) {
+  if (!steps || steps.length === 0) return null;
+
+  return (
+    <div style={{ marginTop: 12 }}>
+      <strong>Transit steps:</strong>
+      <ul>
+        {steps.map((s, idx) => (
+          <li key={idx}>
+            {s.travel_mode || "STEP"}
+            {s.transit?.line_name ? ` | ${s.transit.line_name}` : ""}
+            {s.transit?.departure_stop ? ` | from ${s.transit.departure_stop}` : ""}
+            {s.transit?.arrival_stop ? ` | to ${s.transit.arrival_stop}` : ""}
+            {s.transit?.headsign ? ` | ${s.transit.headsign}` : ""}
+            {s.instruction ? ` | ${s.instruction}` : ""}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 export default function FlightWidget({ initial }) {
-  // ----------------------------------------------------
-  // City suggestions
-  // ----------------------------------------------------
   const [cities, setCities] = useState([]);
 
-  // ----------------------------------------------------
-  // Search fields
-  // ----------------------------------------------------
   const [origin, setOrigin] = useState(initial?.origin_iata || initial?.origin_city || "");
   const [destination, setDestination] = useState(
     initial?.destination_iata || initial?.destination_city || ""
@@ -117,46 +108,28 @@ export default function FlightWidget({ initial }) {
   const [departureDate, setDepartureDate] = useState(initial?.departure_date || "");
   const [adults, setAdults] = useState(initial?.adults || 1);
 
-  // ----------------------------------------------------
-  // Return flight fields
-  // ----------------------------------------------------
   const [returnEnabled, setReturnEnabled] = useState(Boolean(initial?.return_enabled));
   const [returnDate, setReturnDate] = useState(initial?.return_date || "");
 
-  // ----------------------------------------------------
-  // Filters
-  // ----------------------------------------------------
-  const [maxStops, setMaxStops] = useState(
-    initial?.max_stops === 0 ? "0" : "any"
-  );
+  const [maxStops, setMaxStops] = useState(initial?.max_stops === 0 ? "0" : "any");
   const [budget, setBudget] = useState(
     initial?.budget !== null && initial?.budget !== undefined ? String(initial.budget) : ""
   );
 
-  // ----------------------------------------------------
-  // Results
-  // ----------------------------------------------------
   const [offers, setOffers] = useState(initial?.offers || []);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState("");
 
-  // ----------------------------------------------------
-  // Selected offer / generated plan
-  // ----------------------------------------------------
   const [selectedOffer, setSelectedOffer] = useState(null);
   const [generatedPlan, setGeneratedPlan] = useState(null);
   const [planLoading, setPlanLoading] = useState(false);
 
-  // ----------------------------------------------------
-  // IMPORTANT:
-  // Start address is now BLANK by default.
-  // We do not hardcode Ogre anymore.
-  // ----------------------------------------------------
   const [startAddress, setStartAddress] = useState("");
+  const [toAirportMode, setToAirportMode] = useState("drive");
 
-  // ----------------------------------------------------
-  // Load cities once
-  // ----------------------------------------------------
+  const [arrivalDestinationAddress, setArrivalDestinationAddress] = useState("");
+  const [fromAirportMode, setFromAirportMode] = useState("drive");
+
   useEffect(() => {
     const loadCities = async () => {
       try {
@@ -166,13 +139,9 @@ export default function FlightWidget({ initial }) {
         setCities([]);
       }
     };
-
     loadCities();
   }, []);
 
-  // ----------------------------------------------------
-  // Filter + sort offers
-  // ----------------------------------------------------
   const filteredSortedOffers = useMemo(() => {
     let list = [...offers];
 
@@ -192,13 +161,9 @@ export default function FlightWidget({ initial }) {
     return list;
   }, [offers, maxStops, budget]);
 
-  // ----------------------------------------------------
-  // Manual search from widget
-  // ----------------------------------------------------
   const search = async () => {
     setErr("");
     setLoading(true);
-
     setSelectedOffer(null);
     setGeneratedPlan(null);
 
@@ -220,8 +185,7 @@ export default function FlightWidget({ initial }) {
       }
 
       const r = await api.post("/travel/flights/search/", body);
-      const newOffers = r.data?.data || [];
-      setOffers(newOffers);
+      setOffers(r.data?.data || []);
     } catch (e) {
       const msg = e?.response?.data?.detail;
       setErr(msg || "Flight search failed.");
@@ -230,9 +194,6 @@ export default function FlightWidget({ initial }) {
     }
   };
 
-  // ----------------------------------------------------
-  // ENTER triggers search
-  // ----------------------------------------------------
   const onKeyDown = (e) => {
     if (e.key === "Enter") {
       e.preventDefault();
@@ -240,28 +201,18 @@ export default function FlightWidget({ initial }) {
     }
   };
 
-  // ----------------------------------------------------
-  // Select one offer
-  // ----------------------------------------------------
   function handleSelectOffer(offer) {
     setSelectedOffer(offer);
     setGeneratedPlan(null);
     setErr("");
   }
 
-  // ----------------------------------------------------
-  // Change selected offer
-  // ----------------------------------------------------
   function handleClearSelection() {
     setSelectedOffer(null);
     setGeneratedPlan(null);
     setErr("");
   }
 
-  // ----------------------------------------------------
-  // Generate trip plan
-  // If no start address is given, show clear inline prompt.
-  // ----------------------------------------------------
   async function handleGeneratePlan() {
     if (!selectedOffer) {
       setErr("Please select a flight first.");
@@ -286,7 +237,12 @@ export default function FlightWidget({ initial }) {
         adults: Number(adults),
         budget: budget ? Number(budget) : null,
         max_stops: maxStops === "any" ? null : Number(maxStops),
+
         start_address: startAddress.trim(),
+        to_airport_mode: toAirportMode,
+
+        arrival_destination_address: arrivalDestinationAddress.trim(),
+        from_airport_mode: fromAirportMode,
       });
 
       setGeneratedPlan(res.data);
@@ -298,9 +254,6 @@ export default function FlightWidget({ initial }) {
     }
   }
 
-  // ----------------------------------------------------
-  // Visible remaining budget
-  // ----------------------------------------------------
   const remainingBudget = selectedOffer
     ? Number(budget || 0) - Number(selectedOffer?.price?.total || 0)
     : Number(budget || 0);
@@ -309,7 +262,6 @@ export default function FlightWidget({ initial }) {
     <div>
       <h2>Flight search widget</h2>
 
-      {/* City suggestions */}
       <datalist id="city-options">
         {cities.map((c, idx) => (
           <option key={idx} value={c.city || c.iata_code}>
@@ -318,7 +270,6 @@ export default function FlightWidget({ initial }) {
         ))}
       </datalist>
 
-      {/* Controls */}
       <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center" }}>
         <label>
           From:
@@ -370,11 +321,7 @@ export default function FlightWidget({ initial }) {
 
         <label>
           Stops:
-          <select
-            value={maxStops}
-            onChange={(e) => setMaxStops(e.target.value)}
-            style={{ marginLeft: 8 }}
-          >
+          <select value={maxStops} onChange={(e) => setMaxStops(e.target.value)} style={{ marginLeft: 8 }}>
             <option value="any">Any</option>
             <option value="0">Direct only</option>
             <option value="1">Max 1</option>
@@ -415,12 +362,9 @@ export default function FlightWidget({ initial }) {
           </label>
         )}
 
-        <button onClick={search}>
-          {loading ? "Searching..." : "Search"}
-        </button>
+        <button onClick={search}>{loading ? "Searching..." : "Search"}</button>
       </div>
 
-      {/* Ticket link */}
       {origin && destination && departureDate && (
         <p>
           <strong>Get tickets:</strong>{" "}
@@ -434,10 +378,8 @@ export default function FlightWidget({ initial }) {
         </p>
       )}
 
-      {/* Error */}
       {err && <p style={{ color: "#ff8a8a" }}>{err}</p>}
 
-      {/* Budget counter */}
       {budget && (
         <div
           style={{
@@ -450,12 +392,10 @@ export default function FlightWidget({ initial }) {
             fontWeight: "bold",
           }}
         >
-          Remaining budget:{" "}
-          {Number.isFinite(remainingBudget) ? remainingBudget.toFixed(2) : "-"} EUR
+          Remaining budget: {Number.isFinite(remainingBudget) ? remainingBudget.toFixed(2) : "-"} EUR
         </div>
       )}
 
-      {/* Start address */}
       <div style={{ marginBottom: 16 }}>
         <label>
           <strong>Start address:</strong>
@@ -469,7 +409,41 @@ export default function FlightWidget({ initial }) {
         />
       </div>
 
-      {/* Results */}
+      <div style={{ marginBottom: 16 }}>
+        <label>
+          <strong>How will you get to the airport?</strong>
+        </label>
+        <br />
+        <select value={toAirportMode} onChange={(e) => setToAirportMode(e.target.value)} style={{ marginTop: 8 }}>
+          <option value="drive">Drive</option>
+          <option value="transit">Public transport</option>
+        </select>
+      </div>
+
+      <div style={{ marginBottom: 16 }}>
+        <label>
+          <strong>Destination address after landing:</strong>
+        </label>
+        <br />
+        <input
+          value={arrivalDestinationAddress}
+          onChange={(e) => setArrivalDestinationAddress(e.target.value)}
+          placeholder="Example: London Westminster Palace Gardens, Artillery Row"
+          style={{ width: "520px", maxWidth: "100%", padding: "10px", marginTop: "8px" }}
+        />
+      </div>
+
+      <div style={{ marginBottom: 16 }}>
+        <label>
+          <strong>How will you get there from the airport?</strong>
+        </label>
+        <br />
+        <select value={fromAirportMode} onChange={(e) => setFromAirportMode(e.target.value)} style={{ marginTop: 8 }}>
+          <option value="drive">Drive / car</option>
+          <option value="transit">Public transport</option>
+        </select>
+      </div>
+
       {filteredSortedOffers.length > 0 && (
         <div>
           <h3>Results (cheapest first)</h3>
@@ -570,7 +544,6 @@ export default function FlightWidget({ initial }) {
         <p>No results yet. Enter details and search.</p>
       )}
 
-      {/* Generated plan */}
       {generatedPlan && (
         <div
           style={{
@@ -583,23 +556,7 @@ export default function FlightWidget({ initial }) {
         >
           <h2>Your trip plan</h2>
 
-          <p>
-            <strong>Start address:</strong> {generatedPlan.start_address || "-"}
-          </p>
-
-          <p>
-            <strong>Leave home at:</strong> {generatedPlan.leave_home_at || "-"}
-          </p>
-
-          <p>
-            <strong>Drive time to airport:</strong>{" "}
-            {generatedPlan.drive_minutes != null ? `${generatedPlan.drive_minutes} min` : "-"}
-          </p>
-
-          <p>
-            <strong>Flight:</strong> {generatedPlan.flight_summary || "-"}
-          </p>
-
+          <p><strong>Flight:</strong> {generatedPlan.flight_summary || "-"}</p>
           <p>
             <strong>Remaining budget:</strong>{" "}
             {generatedPlan.remaining_budget != null
@@ -607,27 +564,46 @@ export default function FlightWidget({ initial }) {
               : "-"}
           </p>
 
-          <p>
-            <strong>Google Maps route:</strong>{" "}
-            {generatedPlan.route_google_maps_url ? (
-              <a href={generatedPlan.route_google_maps_url} target="_blank" rel="noreferrer">
-                Open in Google Maps
-              </a>
-            ) : (
-              "-"
-            )}
-          </p>
+          {generatedPlan.leg1 && (
+            <div style={{ marginTop: 20 }}>
+              <h3>Before flight: go to departure airport</h3>
+              <p><strong>Mode:</strong> {generatedPlan.leg1.mode}</p>
+              <p><strong>From:</strong> {generatedPlan.leg1.start_address}</p>
+              <p><strong>To:</strong> {generatedPlan.leg1.destination}</p>
+              <p><strong>Leave home at:</strong> {generatedPlan.leg1.leave_home_at || "-"}</p>
+              <p><strong>Duration:</strong> {generatedPlan.leg1.duration_minutes != null ? `${generatedPlan.leg1.duration_minutes} min` : "-"}</p>
+              <p>
+                <strong>Route:</strong>{" "}
+                {generatedPlan.leg1.google_maps_url ? (
+                  <a href={generatedPlan.leg1.google_maps_url} target="_blank" rel="noreferrer">
+                    Open in Google Maps
+                  </a>
+                ) : "-"}
+              </p>
 
-          <p>
-            <strong>Waze route:</strong>{" "}
-            {generatedPlan.route_waze_url ? (
-              <a href={generatedPlan.route_waze_url} target="_blank" rel="noreferrer">
-                Open in Waze
-              </a>
-            ) : (
-              "-"
-            )}
-          </p>
+              <TransitSteps steps={generatedPlan.leg1.steps} />
+            </div>
+          )}
+
+          {generatedPlan.leg2 && (
+            <div style={{ marginTop: 20 }}>
+              <h3>After landing: go to destination</h3>
+              <p><strong>Mode:</strong> {generatedPlan.leg2.mode}</p>
+              <p><strong>From:</strong> {generatedPlan.leg2.start_address}</p>
+              <p><strong>To:</strong> {generatedPlan.leg2.destination}</p>
+              <p><strong>Duration:</strong> {generatedPlan.leg2.duration_minutes != null ? `${generatedPlan.leg2.duration_minutes} min` : "-"}</p>
+              <p>
+                <strong>Route:</strong>{" "}
+                {generatedPlan.leg2.google_maps_url ? (
+                  <a href={generatedPlan.leg2.google_maps_url} target="_blank" rel="noreferrer">
+                    Open in Google Maps
+                  </a>
+                ) : "-"}
+              </p>
+
+              <TransitSteps steps={generatedPlan.leg2.steps} />
+            </div>
+          )}
         </div>
       )}
     </div>

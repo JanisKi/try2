@@ -1,6 +1,6 @@
 # chatbot/api_views.py
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import requests
 
 from rest_framework.views import APIView
@@ -17,6 +17,21 @@ from travel.services.amadeus import (
     pick_first_airport_iata,
 )
 from travel.services.openrouteservice import geocode_address, route_driving
+from travel.services.google_routes import compute_transit_route, summarize_transit_route
+
+
+# ---------------------------------------------------------
+# CONFIG: airport timing buffers
+# ---------------------------------------------------------
+# User must arrive at departure airport this many minutes before flight
+DEPARTURE_AIRPORT_BUFFER_MINUTES = 90
+
+# After landing, assume user needs time to:
+# - get off the plane
+# - walk through the airport
+# - possibly collect baggage
+# before they can catch public transport
+ARRIVAL_AIRPORT_BUFFER_MINUTES = 60
 
 
 def build_preview(amadeus_json: dict, limit: int = 8):
@@ -37,10 +52,7 @@ def build_preview(amadeus_json: dict, limit: int = 8):
 
 def get_airport_route_target(iata_code: str):
     """
-    Return a human-readable route destination for the departure airport.
-
-    We use addresses/names instead of raw coordinates because raw airport
-    coordinates often are not on a drivable road segment.
+    Human-readable route target for airport access.
     """
     mapping = {
         "RIX": {
@@ -54,6 +66,26 @@ def get_airport_route_target(iata_code: str):
         "CDG": {
             "label": "Paris Charles de Gaulle Airport",
             "route_address": "Paris Charles de Gaulle Airport, France",
+        },
+        "LHR": {
+            "label": "London Heathrow Airport",
+            "route_address": "London Heathrow Airport, United Kingdom",
+        },
+        "LGW": {
+            "label": "London Gatwick Airport",
+            "route_address": "London Gatwick Airport, United Kingdom",
+        },
+        "STN": {
+            "label": "London Stansted Airport",
+            "route_address": "London Stansted Airport, United Kingdom",
+        },
+        "LTN": {
+            "label": "London Luton Airport",
+            "route_address": "London Luton Airport, United Kingdom",
+        },
+        "OSL": {
+            "label": "Oslo Airport",
+            "route_address": "Oslo Airport, Norway",
         },
     }
 
@@ -75,7 +107,6 @@ class ChatSendView(APIView):
         if not prompt:
             return Response({"detail": "prompt is required"}, status=400)
 
-        # Save user message
         ChatMessage.objects.create(user=request.user, role="user", content=prompt)
 
         intent = extract_flight_intent(prompt)
@@ -84,7 +115,6 @@ class ChatSendView(APIView):
         flight_widget = None
 
         if intent and intent.get("intent_type") == "flight_search":
-            # Save parsed intent
             TravelIntent.objects.create(
                 user=request.user,
                 raw_text=prompt,
@@ -98,11 +128,9 @@ class ChatSendView(APIView):
                 budget=intent.get("budget"),
             )
 
-            # Resolve city names to code
             origin_iata = city_to_iata(intent.get("origin"))
             dest_iata = city_to_iata(intent.get("destination"))
 
-            # Allow direct typed IATA codes
             if not origin_iata and intent.get("origin") and len(intent["origin"].strip()) == 3:
                 origin_iata = intent["origin"].strip().upper()
 
@@ -112,7 +140,6 @@ class ChatSendView(APIView):
             if intent.get("departure_date") and origin_iata and dest_iata:
                 amadeus_json = None
 
-                # First attempt: use resolved code directly
                 try:
                     amadeus_json = search_flights(
                         origin=origin_iata,
@@ -122,7 +149,6 @@ class ChatSendView(APIView):
                         return_date=str(intent["return_date"]) if intent.get("return_date") else None,
                     )
                 except requests.HTTPError:
-                    # Retry with a concrete AIRPORT code if destination is a city code
                     retry_dest_iata = None
 
                     try:
@@ -143,7 +169,6 @@ class ChatSendView(APIView):
                             dest_iata = retry_dest_iata
                         except requests.HTTPError:
                             amadeus_json = None
-
                 except Exception as e:
                     answer = f"Flight search failed: {str(e)}"
 
@@ -220,16 +245,17 @@ class ChatSendView(APIView):
 
 class GenerateTripPlanView(APIView):
     """
-    Generate a trip plan after the user selects a flight.
+    Build a trip plan around a selected flight.
 
-    Behavior:
-    - requires selected flight
-    - requires start address
-    - geocodes BOTH:
-        start address
-        airport destination address
-    - calculates drive duration and leave-home time
-    - returns Google Maps + Waze links
+    Supports:
+    - to_airport_mode: drive | transit
+    - from_airport_mode: drive | transit
+    - destination address after landing
+
+    IMPORTANT:
+    - first segment departure is used for leg 1
+    - last segment arrival is used for leg 2
+    - transit after landing uses ARRIVAL_AIRPORT_BUFFER_MINUTES
     """
     permission_classes = [permissions.IsAuthenticated]
 
@@ -246,104 +272,226 @@ class GenerateTripPlanView(APIView):
         adults = request.data.get("adults")
         budget = request.data.get("budget")
 
-        # Do NOT hardcode a fallback address
         start_address = (request.data.get("start_address") or "").strip()
+        to_airport_mode = (request.data.get("to_airport_mode") or "drive").strip()
+        arrival_destination_address = (request.data.get("arrival_destination_address") or "").strip()
+        from_airport_mode = (request.data.get("from_airport_mode") or "drive").strip()
 
         if not start_address:
             return Response(
-                {
-                    "detail": "Please provide your starting location first.",
-                    "needs_start_address": True,
-                },
+                {"detail": "Please provide your starting location first.", "needs_start_address": True},
                 status=400,
             )
 
-        # Parse selected outbound flight segment
         try:
-            itinerary = selected_offer["itineraries"][0]
-            segment = itinerary["segments"][0]
+            outbound_itinerary = selected_offer["itineraries"][0]
+            outbound_segments = outbound_itinerary["segments"]
 
-            departure_iata = segment["departure"]["iataCode"]
-            departure_at = segment["departure"]["at"]
+            # First segment = actual departure from origin
+            first_segment = outbound_segments[0]
 
-            arrival_iata = segment["arrival"]["iataCode"]
-            arrival_at = segment["arrival"]["at"]
+            # Last segment = final arrival at destination
+            last_segment = outbound_segments[-1]
 
-            carrier = segment.get("carrierCode", "")
-            flight_number = segment.get("number", "")
+            departure_iata = first_segment["departure"]["iataCode"]
+            departure_at = first_segment["departure"]["at"]
+
+            arrival_iata = last_segment["arrival"]["iataCode"]
+            arrival_at = last_segment["arrival"]["at"]
+
+            carrier = first_segment.get("carrierCode", "")
+            flight_number = first_segment.get("number", "")
             price_total = float(selected_offer["price"]["total"])
         except Exception as e:
             return Response({"detail": f"Could not parse selected offer: {str(e)}"}, status=400)
 
-        # Get a routable airport target
-        airport_target = get_airport_route_target(departure_iata)
+        departure_airport = get_airport_route_target(departure_iata)
+        arrival_airport = get_airport_route_target(arrival_iata)
 
-        drive_minutes = None
-        route_distance_m = None
-        leave_home_at = None
-        route_google_maps_url = None
-        route_waze_url = None
+        # -----------------------------
+        # LEG 1: home -> departure airport
+        # -----------------------------
+        leg1 = {
+            "mode": to_airport_mode,
+            "start_address": start_address,
+            "destination": departure_airport["route_address"],
+            "duration_minutes": None,
+            "distance_meters": None,
+            "leave_home_at": None,
+            "google_maps_url": None,
+            "steps": [],
+        }
 
         try:
-            # Geocode user's start address
-            start_coords = geocode_address(start_address)
-            if not start_coords:
-                return Response(
-                    {
-                        "detail": "Could not find that starting location. Please enter a more specific address.",
-                        "needs_start_address": True,
-                    },
-                    status=400,
-                )
-
-            # Geocode route destination for the airport
-            airport_coords = geocode_address(airport_target["route_address"])
-            if not airport_coords:
-                return Response(
-                    {
-                        "detail": f"Could not resolve route destination for airport {departure_iata}.",
-                    },
-                    status=400,
-                )
-
-            # Route from home to airport
-            route = route_driving(
-                start_coords["lat"],
-                start_coords["lon"],
-                airport_coords["lat"],
-                airport_coords["lon"],
-            )
-
-            drive_seconds = int(route["duration"])
-            drive_minutes = drive_seconds // 60
-            route_distance_m = int(route["distance"])
-
-            # Need to be at airport 90 minutes before departure
             flight_departure_dt = datetime.fromisoformat(departure_at)
-            leave_dt = flight_departure_dt - timedelta(minutes=90) - timedelta(seconds=drive_seconds)
-            leave_home_at = leave_dt.strftime("%Y-%m-%d %H:%M")
 
-            # Build route links
-            route_google_maps_url = (
-                "https://www.google.com/maps/dir/?api=1"
-                f"&origin={start_address.replace(' ', '+')}"
-                f"&destination={airport_target['route_address'].replace(' ', '+')}"
-                "&travelmode=driving"
-            )
+            if to_airport_mode == "drive":
+                start_coords = geocode_address(start_address)
+                if not start_coords:
+                    return Response({"detail": "Could not find that starting location."}, status=400)
 
-            route_waze_url = (
-                "https://www.waze.com/ul"
-                f"?ll={airport_coords['lat']},{airport_coords['lon']}"
-                "&navigate=yes"
-            )
+                airport_coords = geocode_address(departure_airport["route_address"])
+                if not airport_coords:
+                    return Response({"detail": f"Could not resolve departure airport {departure_iata}."}, status=400)
+
+                route = route_driving(
+                    start_coords["lat"],
+                    start_coords["lon"],
+                    airport_coords["lat"],
+                    airport_coords["lon"],
+                )
+
+                drive_seconds = int(route["duration"])
+                leg1["duration_minutes"] = drive_seconds // 60
+                leg1["distance_meters"] = int(route["distance"])
+
+                leave_dt = flight_departure_dt - timedelta(
+                    minutes=DEPARTURE_AIRPORT_BUFFER_MINUTES
+                ) - timedelta(seconds=drive_seconds)
+                leg1["leave_home_at"] = leave_dt.strftime("%Y-%m-%d %H:%M")
+
+                leg1["google_maps_url"] = (
+                    "https://www.google.com/maps/dir/?api=1"
+                    f"&origin={start_address.replace(' ', '+')}"
+                    f"&destination={departure_airport['route_address'].replace(' ', '+')}"
+                    "&travelmode=driving"
+                )
+
+            elif to_airport_mode == "transit":
+                transit_json = compute_transit_route(
+                    origin_address=start_address,
+                    destination_address=departure_airport["route_address"],
+                    departure_time_iso=flight_departure_dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
+                )
+
+                summary = summarize_transit_route(transit_json)
+
+                duration_text = summary.get("duration", "0s")
+                seconds = 0
+
+                if isinstance(duration_text, str) and duration_text.endswith("s"):
+                    try:
+                        seconds = int(duration_text[:-1])
+                    except Exception:
+                        seconds = 0
+
+                leg1["duration_minutes"] = seconds // 60
+                leg1["distance_meters"] = summary.get("distance_meters")
+                leg1["leave_home_at"] = (
+                    flight_departure_dt
+                    - timedelta(minutes=DEPARTURE_AIRPORT_BUFFER_MINUTES)
+                    - timedelta(seconds=seconds)
+                ).strftime("%Y-%m-%d %H:%M")
+                leg1["steps"] = summary.get("steps", [])
+
+                leg1["google_maps_url"] = (
+                    "https://www.google.com/maps/dir/?api=1"
+                    f"&origin={start_address.replace(' ', '+')}"
+                    f"&destination={departure_airport['route_address'].replace(' ', '+')}"
+                    "&travelmode=transit"
+                )
+
+            else:
+                return Response({"detail": "Invalid to_airport_mode."}, status=400)
 
         except Exception as e:
-            return Response(
-                {
-                    "detail": f"Route calculation failed: {str(e)}",
-                },
-                status=400,
-            )
+            return Response({"detail": f"Route to airport failed: {str(e)}"}, status=400)
+
+        # -----------------------------
+        # LEG 2: arrival airport -> destination address
+        # -----------------------------
+        leg2 = None
+
+        if arrival_destination_address:
+            leg2 = {
+                "mode": from_airport_mode,
+                "start_address": arrival_airport["route_address"],
+                "destination": arrival_destination_address,
+                "duration_minutes": None,
+                "distance_meters": None,
+                "google_maps_url": None,
+                "steps": [],
+                "start_after_buffer_at": None,
+            }
+
+            try:
+                if from_airport_mode == "drive":
+                    airport_coords = geocode_address(arrival_airport["route_address"])
+                    if not airport_coords:
+                        return Response({"detail": f"Could not resolve arrival airport {arrival_iata}."}, status=400)
+
+                    dest_coords = geocode_address(arrival_destination_address)
+                    if not dest_coords:
+                        return Response({"detail": "Could not resolve destination address after landing."}, status=400)
+
+                    route = route_driving(
+                        airport_coords["lat"],
+                        airport_coords["lon"],
+                        dest_coords["lat"],
+                        dest_coords["lon"],
+                    )
+
+                    drive_seconds = int(route["duration"])
+                    leg2["duration_minutes"] = drive_seconds // 60
+                    leg2["distance_meters"] = int(route["distance"])
+
+                    # Even for drive, it is useful to show when the user can realistically start
+                    final_arrival_dt = datetime.fromisoformat(arrival_at)
+                    ready_to_leave_airport_dt = final_arrival_dt + timedelta(
+                        minutes=ARRIVAL_AIRPORT_BUFFER_MINUTES
+                    )
+                    leg2["start_after_buffer_at"] = ready_to_leave_airport_dt.strftime("%Y-%m-%d %H:%M")
+
+                    leg2["google_maps_url"] = (
+                        "https://www.google.com/maps/dir/?api=1"
+                        f"&origin={arrival_airport['route_address'].replace(' ', '+')}"
+                        f"&destination={arrival_destination_address.replace(' ', '+')}"
+                        "&travelmode=driving"
+                    )
+
+                elif from_airport_mode == "transit":
+                    # IMPORTANT:
+                    # Start transit search NOT at exact landing time,
+                    # but landing time + airport exit buffer.
+                    final_arrival_dt = datetime.fromisoformat(arrival_at)
+                    ready_to_leave_airport_dt = final_arrival_dt + timedelta(
+                        minutes=ARRIVAL_AIRPORT_BUFFER_MINUTES
+                    )
+
+                    leg2["start_after_buffer_at"] = ready_to_leave_airport_dt.strftime("%Y-%m-%d %H:%M")
+
+                    transit_json = compute_transit_route(
+                        origin_address=arrival_airport["route_address"],
+                        destination_address=arrival_destination_address,
+                        departure_time_iso=ready_to_leave_airport_dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
+                    )
+
+                    summary = summarize_transit_route(transit_json)
+
+                    duration_text = summary.get("duration", "0s")
+                    seconds = 0
+                    if isinstance(duration_text, str) and duration_text.endswith("s"):
+                        try:
+                            seconds = int(duration_text[:-1])
+                        except Exception:
+                            seconds = 0
+
+                    leg2["duration_minutes"] = seconds // 60
+                    leg2["distance_meters"] = summary.get("distance_meters")
+                    leg2["steps"] = summary.get("steps", [])
+
+                    leg2["google_maps_url"] = (
+                        "https://www.google.com/maps/dir/?api=1"
+                        f"&origin={arrival_airport['route_address'].replace(' ', '+')}"
+                        f"&destination={arrival_destination_address.replace(' ', '+')}"
+                        "&travelmode=transit"
+                    )
+
+                else:
+                    return Response({"detail": "Invalid from_airport_mode."}, status=400)
+
+            except Exception as e:
+                return Response({"detail": f"Route from arrival airport failed: {str(e)}"}, status=400)
 
         remaining_budget = None
         try:
@@ -363,25 +511,11 @@ class GenerateTripPlanView(APIView):
 
         return Response({
             "ok": True,
-            "start_address": start_address,
-            "airport": departure_iata,
-            "airport_label": airport_target["label"],
-            "airport_route_address": airport_target["route_address"],
-            "destination_airport": arrival_iata,
-            "departure_at": departure_at,
-            "arrival_at": arrival_at,
-            "leave_home_at": leave_home_at,
-            "drive_minutes": drive_minutes,
-            "route_distance_m": route_distance_m,
-            "route_google_maps_url": route_google_maps_url,
-            "route_waze_url": route_waze_url,
             "flight_summary": f"{departure_iata} -> {arrival_iata} | {carrier}{flight_number} | {price_total:.2f} EUR",
             "selected_price": price_total,
             "remaining_budget": remaining_budget,
-            "origin": origin,
-            "destination": destination,
-            "departure_date": departure_date,
-            "return_date": return_date,
-            "adults": adults,
-            "budget": budget,
+            "departure_at": departure_at,
+            "arrival_at": arrival_at,
+            "leg1": leg1,
+            "leg2": leg2,
         })
