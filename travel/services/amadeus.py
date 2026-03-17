@@ -3,21 +3,12 @@
 import os
 import requests
 
-
-# ---------------------------------------------------------
-# Amadeus environment config
-# ---------------------------------------------------------
-
 AMADEUS_BASE_URL = "https://test.api.amadeus.com"
 
 
 def get_access_token():
     """
-    Get OAuth token from Amadeus.
-
-    This token is needed for:
-    - locations search
-    - flight offers search
+    Get OAuth token for Amadeus Self-Service APIs.
     """
     api_key = os.environ.get("AMADEUS_API_KEY")
     api_secret = os.environ.get("AMADEUS_API_SECRET")
@@ -41,19 +32,20 @@ def get_access_token():
     return token_resp.json()["access_token"]
 
 
-def search_locations(keyword: str, limit: int = 5):
+def search_locations(keyword: str, limit: int = 10):
     """
-    Resolve a user-entered city/airport name into Amadeus locations.
+    Search Amadeus locations for cities/airports.
 
     Example:
-        "Paris"
-
-    Returns a list of location objects.
+      "Amsterdam"
     """
-    token = get_access_token()
+    access_token = get_access_token()
 
     url = f"{AMADEUS_BASE_URL}/v1/reference-data/locations"
-    headers = {"Authorization": f"Bearer {token}"}
+
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+    }
 
     params = {
         "keyword": keyword,
@@ -61,18 +53,19 @@ def search_locations(keyword: str, limit: int = 5):
         "page[limit]": limit,
     }
 
-    r = requests.get(url, headers=headers, params=params, timeout=30)
-    r.raise_for_status()
+    resp = requests.get(url, headers=headers, params=params, timeout=30)
+    resp.raise_for_status()
 
-    return r.json().get("data", [])
+    return resp.json().get("data", [])
 
 
 def pick_first_airport_iata(locations: list[dict]) -> str | None:
     """
-    Prefer a real AIRPORT code over a CITY code.
+    Prefer a concrete AIRPORT code over a CITY code.
 
-    This is useful when Flight Offers Search fails with a city code
-    like PAR and we want to retry with CDG/ORY/etc.
+    Example:
+      Amsterdam -> AMS
+      Paris -> CDG or ORY
     """
     for loc in locations:
         if loc.get("subType") == "AIRPORT" and loc.get("iataCode"):
@@ -91,18 +84,8 @@ def search_flights(
     """
     Search flights using Amadeus Flight Offers Search.
 
-    Inputs:
-    - origin: IATA code (airport or city)
-    - destination: IATA code (airport or city)
-    - departure_date: YYYY-MM-DD
-    - adults: number of adult passengers
-    - return_date: optional YYYY-MM-DD
-
-    Returns:
-    - parsed JSON response
-
-    Raises:
-    - requests.HTTPError if Amadeus returns an error
+    Returns parsed JSON.
+    Raises HTTPError if Amadeus rejects the query.
     """
     access_token = get_access_token()
 
@@ -117,7 +100,6 @@ def search_flights(
         "max": 30,
     }
 
-    # Only send returnDate if it exists
     if return_date:
         params["returnDate"] = return_date
 
@@ -132,8 +114,6 @@ def search_flights(
         timeout=30,
     )
 
-    # If request failed, include Amadeus response body in the Python exception.
-    # This makes debugging MUCH easier than a generic 400.
     if not offers_resp.ok:
         try:
             error_body = offers_resp.json()

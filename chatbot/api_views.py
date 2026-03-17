@@ -21,7 +21,7 @@ from travel.services.openrouteservice import geocode_address, route_driving
 
 def build_preview(amadeus_json: dict, limit: int = 8):
     """
-    Build a cheapest-first preview for the frontend.
+    Build a cheapest-first preview list for the frontend.
     """
     offers = (amadeus_json or {}).get("data") or []
 
@@ -36,6 +36,16 @@ def build_preview(amadeus_json: dict, limit: int = 8):
 
 
 class ChatSendView(APIView):
+    """
+    Main chat send endpoint.
+
+    Flow:
+    1) Save user message
+    2) Parse travel intent
+    3) If enough data exists -> search flights
+    4) Retry with real airport code if city code fails
+    5) Otherwise fall back to OpenRouter
+    """
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request):
@@ -47,14 +57,13 @@ class ChatSendView(APIView):
         # Save user message
         ChatMessage.objects.create(user=request.user, role="user", content=prompt)
 
-        # Try to parse structured flight/trip intent
         intent = extract_flight_intent(prompt)
 
         answer = None
         flight_widget = None
 
         if intent and intent.get("intent_type") == "flight_search":
-            # Save parsed trip info to DB
+            # Save parsed intent
             TravelIntent.objects.create(
                 user=request.user,
                 raw_text=prompt,
@@ -68,21 +77,22 @@ class ChatSendView(APIView):
                 budget=intent.get("budget"),
             )
 
-            # Resolve city names to IATA codes
+            # Resolve city names to code
             origin_iata = city_to_iata(intent.get("origin"))
             dest_iata = city_to_iata(intent.get("destination"))
 
-            # If user directly typed something like RIX or AMS
+            # Allow direct typed IATA codes
             if not origin_iata and intent.get("origin") and len(intent["origin"].strip()) == 3:
                 origin_iata = intent["origin"].strip().upper()
 
             if not dest_iata and intent.get("destination") and len(intent["destination"].strip()) == 3:
                 dest_iata = intent["destination"].strip().upper()
 
-            # If we have enough info, try Amadeus search
             if intent.get("departure_date") and origin_iata and dest_iata:
+                amadeus_json = None
+
+                # First attempt: use the resolved code directly
                 try:
-                    # First try with the normal resolved code
                     amadeus_json = search_flights(
                         origin=origin_iata,
                         destination=dest_iata,
@@ -90,11 +100,8 @@ class ChatSendView(APIView):
                         adults=int(intent.get("adults") or 1),
                         return_date=str(intent["return_date"]) if intent.get("return_date") else None,
                     )
-
                 except requests.HTTPError:
-                    # Fallback:
-                    # If destination was a CITY code like PAR and Amadeus rejects it,
-                    # retry using the first AIRPORT code like CDG or ORY.
+                    # Retry with first AIRPORT code if destination was a city code
                     retry_dest_iata = None
 
                     try:
@@ -113,22 +120,11 @@ class ChatSendView(APIView):
                                 return_date=str(intent["return_date"]) if intent.get("return_date") else None,
                             )
                             dest_iata = retry_dest_iata
-                        except requests.HTTPError as e:
-                            answer = (
-                                "I understood your trip request, but Amadeus could not find flights for that route/date. "
-                                "Please try another date or destination airport."
-                            )
+                        except requests.HTTPError:
                             amadeus_json = None
-                    else:
-                        answer = (
-                            "I understood your trip request, but Amadeus could not find flights for that route/date. "
-                            "Please try another date or destination airport."
-                        )
-                        amadeus_json = None
 
                 except Exception as e:
                     answer = f"Flight search failed: {str(e)}"
-                    amadeus_json = None
 
                 if amadeus_json:
                     flight_widget = {
@@ -153,7 +149,11 @@ class ChatSendView(APIView):
                         answer += f", returning on {flight_widget['return_date']}"
 
                     answer += f" for {flight_widget['adults']} adult(s)."
-
+                elif answer is None:
+                    answer = (
+                        "I understood your trip request, but Amadeus could not find flights for that route/date. "
+                        "Please try another date or destination airport."
+                    )
             else:
                 missing = []
 
@@ -170,16 +170,28 @@ class ChatSendView(APIView):
                     + "."
                 )
 
-        # Fallback to general chat
+        # Only use LLM fallback if no structured travel answer exists
         if answer is None:
             try:
+                system = {
+                    "role": "system",
+                    "content": (
+                        "You are a travel assistant inside a travel planning app. "
+                        "Do NOT say you cannot provide real-time flights if the app can search flights. "
+                        "Do NOT tell the user to use Google Flights, Expedia, Skyscanner, or Kayak. "
+                        "If you are missing structured travel data, ask a short follow-up question instead."
+                    ),
+                }
+
                 recent = ChatMessage.objects.filter(user=request.user).order_by("-created_at")[:10]
                 messages = [{"role": m.role, "content": m.content} for m in reversed(recent)]
+                messages = [system] + messages
+
                 answer = openrouter_chat(messages)
             except Exception as e:
                 answer = f"Sorry — chat request failed: {str(e)}"
 
-        # Save bot reply
+        # Save assistant reply
         ChatMessage.objects.create(user=request.user, role="assistant", content=answer)
 
         return Response({
@@ -189,6 +201,9 @@ class ChatSendView(APIView):
 
 
 class GenerateTripPlanView(APIView):
+    """
+    Generate a simple trip plan from a selected flight.
+    """
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request):
@@ -205,7 +220,7 @@ class GenerateTripPlanView(APIView):
         budget = request.data.get("budget")
         start_address = (request.data.get("start_address") or "").strip() or "Ogre Mednieku iela 23"
 
-        # Read selected flight from frontend
+        # Parse selected Amadeus flight
         try:
             itinerary = selected_offer["itineraries"][0]
             segment = itinerary["segments"][0]
@@ -220,7 +235,8 @@ class GenerateTripPlanView(APIView):
         except Exception as e:
             return Response({"detail": f"Could not parse selected offer: {str(e)}"}, status=400)
 
-        # Current MVP: route from home to Riga Airport
+        # Current MVP:
+        # calculate route from home to Riga Airport
         airport_coords = {
             "lat": 56.9236,
             "lon": 23.9711,
@@ -246,7 +262,7 @@ class GenerateTripPlanView(APIView):
                 drive_minutes = drive_seconds // 60
                 route_distance_m = int(route["distance"])
 
-                # User must be at airport 90 minutes before departure
+                # Must be at airport 90 minutes before departure
                 flight_departure_dt = datetime.fromisoformat(departure_at)
                 leave_dt = flight_departure_dt - timedelta(minutes=90) - timedelta(seconds=drive_seconds)
                 leave_home_at = leave_dt.strftime("%Y-%m-%d %H:%M")
@@ -258,7 +274,7 @@ class GenerateTripPlanView(APIView):
                     "&travelmode=driving"
                 )
         except Exception:
-            # Keep endpoint alive even if route service fails
+            # Do not crash the endpoint if routing fails
             pass
 
         remaining_budget = None

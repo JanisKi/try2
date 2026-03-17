@@ -6,35 +6,38 @@ import requests
 from datetime import timedelta
 from django.utils import timezone
 
+# OpenRouter endpoint
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
-# -------------------------------------------------
-# Date parsing helpers
-# -------------------------------------------------
-
-# Supports:
+# ---------------------------------------------------------
+# Date regexes
+# ---------------------------------------------------------
+# Supported formats:
 #   - 2026-03-15
 #   - 15.03.2026
 ISO_DATE_RE = re.compile(r"\b(20\d{2})-(\d{2})-(\d{2})\b")
 DOT_DATE_RE = re.compile(r"\b(\d{1,2})\.(\d{1,2})\.(20\d{2})\b")
 
 
+# ---------------------------------------------------------
+# Date helpers
+# ---------------------------------------------------------
 def parse_any_date_from_text(text: str):
     """
-    Parse the FIRST supported date from text.
+    Parse one date from text.
 
-    Supported:
+    Supports:
       - YYYY-MM-DD
       - DD.MM.YYYY
       - today
       - tomorrow
 
     Returns:
-      datetime.date or None
+      date or None
     """
     t = (text or "").lower()
 
-    # 1) YYYY-MM-DD
+    # YYYY-MM-DD
     m = ISO_DATE_RE.search(t)
     if m:
         y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
@@ -43,7 +46,7 @@ def parse_any_date_from_text(text: str):
         except ValueError:
             return None
 
-    # 2) DD.MM.YYYY
+    # DD.MM.YYYY
     m = DOT_DATE_RE.search(t)
     if m:
         d, mo, y = int(m.group(1)), int(m.group(2)), int(m.group(3))
@@ -52,9 +55,10 @@ def parse_any_date_from_text(text: str):
         except ValueError:
             return None
 
-    # 3) natural words
+    # Natural words
     if "tomorrow" in t:
         return timezone.localdate() + timedelta(days=1)
+
     if "today" in t:
         return timezone.localdate()
 
@@ -63,73 +67,74 @@ def parse_any_date_from_text(text: str):
 
 def extract_all_dates(text: str):
     """
-    Extract ALL explicit dates from text, in order.
+    Extract all dates from text in the order they appear.
 
-    Useful for prompts like:
-      'I want to go to Paris 15.03.2026 until 25.03.2026'
+    Example:
+      "I want to go to Amsterdam 15.03.2026 until 25.03.2026"
+
+    Returns:
+      [date(2026, 3, 15), date(2026, 3, 25)]
     """
     text = text or ""
-    found = []
+    items = []
 
-    # Find YYYY-MM-DD
-    for m in ISO_DATE_RE.finditer(text):
-        y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
-        try:
-            found.append(timezone.datetime(y, mo, d).date())
-        except ValueError:
-            pass
-
-    # Find DD.MM.YYYY
+    # Find DD.MM.YYYY with position
     for m in DOT_DATE_RE.finditer(text):
         d, mo, y = int(m.group(1)), int(m.group(2)), int(m.group(3))
         try:
-            found.append(timezone.datetime(y, mo, d).date())
+            items.append((m.start(), timezone.datetime(y, mo, d).date()))
         except ValueError:
             pass
 
+    # Find YYYY-MM-DD with position
+    for m in ISO_DATE_RE.finditer(text):
+        y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        try:
+            items.append((m.start(), timezone.datetime(y, mo, d).date()))
+        except ValueError:
+            pass
+
+    # Sort by appearance in string
+    items.sort(key=lambda x: x[0])
+
     # Remove duplicates while preserving order
-    unique = []
+    dates = []
     seen = set()
-    for dt in found:
+    for _, dt in items:
         if dt not in seen:
-            unique.append(dt)
+            dates.append(dt)
             seen.add(dt)
 
-    return unique
+    return dates
 
 
 def parse_departure_date(text: str):
     """
-    Try structured departure parsing first.
-    If not available, fall back to the first date in the prompt.
+    Departure date:
+    - first explicit date in the text
+    - or parse_any_date_from_text fallback
     """
     dates = extract_all_dates(text)
     if dates:
         return dates[0]
+
     return parse_any_date_from_text(text)
 
 
 def parse_return_date(text: str):
     """
-    Return date parsing.
-
-    Supports:
-      - 'return on 25.03.2026'
-      - 'back on 2026-03-25'
-      - 'until 25.03.2026'
-      - second date in free-form trip prompts
+    Return date:
+    - explicit "return/back/until/till"
+    - or second date in the text
     """
     t = (text or "").lower()
 
-    # Explicit return/back/until wording
     m = re.search(r"\b(return|returning|back|until|till)\b(.{0,80})", t)
     if m:
-        tail = m.group(2)
-        parsed = parse_any_date_from_text(tail)
+        parsed = parse_any_date_from_text(m.group(2))
         if parsed:
             return parsed
 
-    # Fallback: second date in the prompt
     dates = extract_all_dates(text)
     if len(dates) >= 2:
         return dates[1]
@@ -137,10 +142,9 @@ def parse_return_date(text: str):
     return None
 
 
-# -------------------------------------------------
-# Budget / adults helpers
-# -------------------------------------------------
-
+# ---------------------------------------------------------
+# Budget / passenger helpers
+# ---------------------------------------------------------
 def parse_budget(text: str) -> float | None:
     """
     Strict budget extraction.
@@ -156,22 +160,22 @@ def parse_budget(text: str) -> float | None:
     """
     t = (text or "").lower()
 
-    # 1) explicit "budget ..."
+    # budget 5000
     m = re.search(r"\bbudget\s*(?:is\s*)?(?:€\s*)?(\d+(?:[.,]\d+)?)\s*(?:eur|euro|euros)?\b", t)
     if m:
         return float(m.group(1).replace(",", "."))
 
-    # 2) euro sign before number
+    # €5000
     m = re.search(r"€\s*(\d+(?:[.,]\d+)?)\b", t)
     if m:
         return float(m.group(1).replace(",", "."))
 
-    # 3) euro sign after number
+    # 5000€
     m = re.search(r"\b(\d+(?:[.,]\d+)?)\s*€\b", t)
     if m:
         return float(m.group(1).replace(",", "."))
 
-    # 4) currency word after number
+    # 5000 eur / euros
     m = re.search(r"\b(\d+(?:[.,]\d+)?)\s*(eur|euro|euros)\b", t)
     if m:
         return float(m.group(1).replace(",", "."))
@@ -181,11 +185,22 @@ def parse_budget(text: str) -> float | None:
 
 def parse_adults(text: str) -> int:
     """
-    Extract adult count from text.
+    Parse number of travelers.
+
+    Supports:
+      - 1 adult
+      - 2 adults
+      - 1 passenger
+      - 2 passengers
+      - 1 person
+      - 2 people
     """
     t = (text or "").lower()
 
-    m = re.search(r"\b(\d+)\s*(adult|adults|passenger|passengers|people|persons)\b", t)
+    m = re.search(
+        r"\b(\d+)\s*(adult|adults|passenger|passengers|person|persons|people)\b",
+        t,
+    )
     if m:
         n = int(m.group(1))
         return max(1, min(n, 9))
@@ -193,13 +208,13 @@ def parse_adults(text: str) -> int:
     return 1
 
 
-# -------------------------------------------------
-# Helpers to preserve dotted dates during cleanup
-# -------------------------------------------------
-
+# ---------------------------------------------------------
+# Preserve dates before punctuation cleanup
+# ---------------------------------------------------------
 def _stash_dates(text: str) -> tuple[str, dict[str, str]]:
     """
-    Protect DD.MM.YYYY / YYYY-MM-DD before punctuation cleanup.
+    Replace dates with placeholders so punctuation cleanup
+    does not destroy DD.MM.YYYY.
     """
     stash: dict[str, str] = {}
     i = 0
@@ -218,44 +233,41 @@ def _stash_dates(text: str) -> tuple[str, dict[str, str]]:
 
 def _restore_stashed_dates(text: str, stash: dict[str, str]) -> str:
     """
-    Put original date strings back.
+    Restore placeholders back into the original date strings.
     """
     for k, v in stash.items():
         text = text.replace(k, v)
     return text
 
 
-# -------------------------------------------------
-# Destination extraction for free-form trip prompts
-# -------------------------------------------------
-
+# ---------------------------------------------------------
+# Destination extraction for broad trip prompts
+# ---------------------------------------------------------
 def extract_destination_city(text: str) -> str | None:
     """
-    Extract destination city from broad prompts like:
-      - 'I want to go to Paris 15.03.2026 until 25.03.2026'
-      - 'Trip to Amsterdam tomorrow'
-      - 'Going to London with 1000 euros'
-
-    We stop city capture before dates / budget / adult words.
+    Extract a destination from broad trip prompts like:
+      - I want to go to Amsterdam 15.03.2026 until 25.03.2026
+      - going to Paris tomorrow
+      - trip to London with 1000 euros
     """
     s = (text or "").strip()
     if not s:
         return None
 
     s, date_stash = _stash_dates(s)
+
+    # Clean punctuation but keep placeholders
     s = re.sub(r"[,\.;:()\[\]{}]+", " ", s)
     s = re.sub(r"\s+", " ", s).strip()
+
+    # Restore dates for final text analysis
     s = _restore_stashed_dates(s, date_stash)
 
     patterns = [
-        # I want to go to Paris ...
-        r"\bi want to go to\s+(?P<dest>[A-Za-z][A-Za-z\- ]*?)(?=\s+(?:on|from|until|till|for|with|budget|__DATE|\d{1,2}\.\d{1,2}\.20\d{2}|\d{4}-\d{2}-\d{2})|$)",
-        # trip to Paris ...
-        r"\btrip to\s+(?P<dest>[A-Za-z][A-Za-z\- ]*?)(?=\s+(?:on|from|until|till|for|with|budget|\d{1,2}\.\d{1,2}\.20\d{2}|\d{4}-\d{2}-\d{2})|$)",
-        # going to Paris ...
-        r"\bgoing to\s+(?P<dest>[A-Za-z][A-Za-z\- ]*?)(?=\s+(?:on|from|until|till|for|with|budget|\d{1,2}\.\d{1,2}\.20\d{2}|\d{4}-\d{2}-\d{2})|$)",
-        # to Paris ...
-        r"\bto\s+(?P<dest>[A-Za-z][A-Za-z\- ]*?)(?=\s+(?:on|from|until|till|for|with|budget|\d{1,2}\.\d{1,2}\.20\d{2}|\d{4}-\d{2}-\d{2})|$)",
+        r"\bi want to go to\s+(?P<dest>[A-Za-z][A-Za-z\- ]*?)(?=\s+(?:with|for|on|from|until|till|budget|\d{1,2}\.\d{1,2}\.20\d{2}|\d{4}-\d{2}-\d{2}|today|tomorrow)|$)",
+        r"\bgoing to\s+(?P<dest>[A-Za-z][A-Za-z\- ]*?)(?=\s+(?:with|for|on|from|until|till|budget|\d{1,2}\.\d{1,2}\.20\d{2}|\d{4}-\d{2}-\d{2}|today|tomorrow)|$)",
+        r"\btrip to\s+(?P<dest>[A-Za-z][A-Za-z\- ]*?)(?=\s+(?:with|for|on|from|until|till|budget|\d{1,2}\.\d{1,2}\.20\d{2}|\d{4}-\d{2}-\d{2}|today|tomorrow)|$)",
+        r"\bto\s+(?P<dest>[A-Za-z][A-Za-z\- ]*?)(?=\s+(?:with|for|on|from|until|till|budget|\d{1,2}\.\d{1,2}\.20\d{2}|\d{4}-\d{2}-\d{2}|today|tomorrow)|$)",
     ]
 
     for pat in patterns:
@@ -268,45 +280,49 @@ def extract_destination_city(text: str) -> str | None:
     return None
 
 
-# -------------------------------------------------
-# Flight / trip intent extraction
-# -------------------------------------------------
-
+# ---------------------------------------------------------
+# Main intent extraction
+# ---------------------------------------------------------
 def extract_flight_intent(text: str):
     """
     Detect travel intent from either:
-      A) classic flight command:
-         'flights from Riga to Amsterdam on 27.02.2026'
-      B) free-form trip command:
-         'I want to go to Paris 15.03.2026 until 25.03.2026 with 5000 euros'
 
-    Returns a dict or None.
+    A) classic flight prompt:
+       "flight from Riga to Amsterdam, 1 person, tomorrow"
+
+    B) broad trip prompt:
+       "I want to go to Amsterdam 15.03.2026 until 25.03.2026 with 5000 euros"
+
+    Returns:
+      dict or None
     """
     original = (text or "").strip()
     if not original:
         return None
 
-    # Preserve dates before punctuation cleanup
+    # Protect dates during punctuation cleanup
     s, date_stash = _stash_dates(original)
     s = re.sub(r"[,\.;:()\[\]{}]+", " ", s)
     s = re.sub(r"\s+", " ", s).strip()
 
-    # Restore dates for parsing
+    # Restore dates for downstream parsers
     date_parse_text = _restore_stashed_dates(s, date_stash)
 
     keyword = r"(?:flight|flights|fly)"
+
+    # Stop destination capture when the next words look like filters/details
     stop_lookahead = (
         r"(?=\s+(?:"
-        r"tomorrow|today|on|for|"
+        r"tomorrow|today|on|for|with|"
         r"return|returning|roundtrip|round-trip|back|until|till|"
         r"\d{4}-\d{2}-\d{2}|"
         r"\d{1,2}\.\d{1,2}\.20\d{2}|"
-        r"\d+\s*(?:adult|adults|passenger|passengers|people|persons)|"
+        r"\d+\s*(?:adult|adults|passenger|passengers|person|persons|people)|"
         r"budget|€|eur|euro|euros"
         r")|$)"
     )
 
-    # Pattern A: "flight from X to Y"
+    # Pattern A: flight from X to Y
     p1 = (
         rf"\b{keyword}\b\s+from\s+"
         rf"(?P<origin>[A-Za-z][A-Za-z\- ]*?)\s+to\s+"
@@ -314,7 +330,7 @@ def extract_flight_intent(text: str):
         + stop_lookahead
     )
 
-    # Pattern B: "flight to Y from X"
+    # Pattern B: flight to Y from X
     p2 = (
         rf"\b{keyword}\b\s+to\s+"
         rf"(?P<dest>[A-Za-z][A-Za-z\- ]*?)\s+from\s+"
@@ -331,16 +347,14 @@ def extract_flight_intent(text: str):
         origin = m.group("origin").strip()
         destination = m.group("dest").strip()
     else:
-        # NEW:
-        # If user gave a broad trip prompt, still treat it as a searchable travel intent.
+        # Broad trip prompt fallback:
+        # if user says "I want to go to Amsterdam...", treat it as a valid travel intent
         destination = extract_destination_city(original)
 
-        # Sensible fallback for your MVP:
-        # if the user does not specify origin, assume Riga.
+        # MVP default origin if not supplied
         if destination:
             origin = "Riga"
 
-    # If we still do not have a destination, not a trip/flight request we understand
     if not destination:
         return None
 
@@ -351,7 +365,8 @@ def extract_flight_intent(text: str):
 
     t = date_parse_text.lower()
     direct_only = any(
-        k in t for k in [
+        k in t
+        for k in [
             "direct only",
             "only direct",
             "nonstop",
@@ -374,10 +389,9 @@ def extract_flight_intent(text: str):
     }
 
 
-# -------------------------------------------------
+# ---------------------------------------------------------
 # OpenRouter chat
-# -------------------------------------------------
-
+# ---------------------------------------------------------
 def openrouter_chat(messages: list[dict]) -> str:
     """
     Send chat messages to OpenRouter and return assistant text.
