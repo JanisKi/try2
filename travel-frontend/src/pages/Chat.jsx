@@ -5,70 +5,88 @@ import { Link } from "react-router-dom";
 import { api } from "../api";
 
 export default function Chat() {
-  // -----------------------------
-  // Chat text state
-  // -----------------------------
+  // ----------------------------------------------------
+  // Main chat input/output state
+  // ----------------------------------------------------
   const [prompt, setPrompt] = useState("");
   const [out, setOut] = useState("");
 
-  // -----------------------------
-  // Flight widget state
-  // -----------------------------
+  // ----------------------------------------------------
+  // Flight widget data returned from backend
+  // ----------------------------------------------------
   const [flightWidget, setFlightWidget] = useState(null);
 
-  // Selected offer after user clicks "Select"
+  // ----------------------------------------------------
+  // Which flight offer the user selected
+  // ----------------------------------------------------
   const [selectedOffer, setSelectedOffer] = useState(null);
 
-  // Generated trip plan response from backend
+  // ----------------------------------------------------
+  // Generated plan returned from backend
+  // ----------------------------------------------------
   const [generatedPlan, setGeneratedPlan] = useState(null);
 
-  // Loading state for plan generation
+  // ----------------------------------------------------
+  // Loading state for generate-plan button
+  // ----------------------------------------------------
   const [planLoading, setPlanLoading] = useState(false);
 
-  // Optional start address for route calculation
+  // ----------------------------------------------------
+  // User start address for route calculation
+  // ----------------------------------------------------
   const [startAddress, setStartAddress] = useState("Ogre Mednieku iela 23");
 
-  // -----------------------------
-  // Send chat prompt
-  // -----------------------------
+  // ----------------------------------------------------
+  // Send chat message to backend
+  // ----------------------------------------------------
   const send = async () => {
     if (!prompt.trim()) return;
 
     const userText = prompt;
     setPrompt("");
+
+    // Reset older plan + selection when user asks a new question
     setGeneratedPlan(null);
     setSelectedOffer(null);
 
-    // Show user message in transcript
+    // Add user message to transcript
     setOut((prev) => prev + `YOU: ${userText}\n`);
 
     try {
       const r = await api.post("/chat/send/", { prompt: userText });
 
-      // Show assistant message in transcript
+      // Add assistant answer to transcript
       setOut((prev) => prev + `BOT: ${r.data.answer}\n`);
 
-      // If backend returned flight widget data, store it
+      // Save returned flight widget data
       setFlightWidget(r.data.flight_widget || null);
     } catch (err) {
       console.error(err);
-      setOut((prev) => prev + `BOT: Request failed.\n`);
+      setOut((prev) => prev + `BOT: Error: Request failed.\n`);
     }
   };
 
-  // -----------------------------
-  // Select one flight offer
-  // -----------------------------
+  // ----------------------------------------------------
+  // User selects one flight
+  // ----------------------------------------------------
   function handleSelectOffer(offer) {
     setSelectedOffer(offer);
 
-    // Reset old plan if user changes selected offer
+    // Reset old plan if a different flight is selected
     setGeneratedPlan(null);
   }
 
-  // -----------------------------
-  // Generate a trip plan
-  // -----------------------------
+  // ----------------------------------------------------
+  // Clear selected flight so user can pick another one
+  // ----------------------------------------------------
+  function handleClearSelection() {
+    setSelectedOffer(null);
+    setGeneratedPlan(null);
+  }
+
+  // ----------------------------------------------------
+  // Generate plan using selected flight
+  // ----------------------------------------------------
   async function handleGeneratePlan() {
     if (!selectedOffer || !flightWidget) {
       alert("Please select a flight first.");
@@ -79,9 +97,10 @@ export default function Chat() {
       setPlanLoading(true);
 
       const res = await api.post("/chat/generate-trip-plan/", {
+        // Full selected Amadeus offer
         selected_offer: selectedOffer,
 
-        // Send current widget values too, so backend has context
+        // Extra context for backend
         origin: flightWidget.origin_iata || flightWidget.origin_city,
         destination: flightWidget.destination_iata || flightWidget.destination_city,
         departure_date: flightWidget.departure_date,
@@ -101,16 +120,24 @@ export default function Chat() {
     }
   }
 
-  // -----------------------------
-  // Remaining budget display
-  // -----------------------------
+  // ----------------------------------------------------
+  // Remaining budget shown in UI
+  // ----------------------------------------------------
   const remainingBudget = selectedOffer
     ? Number(flightWidget?.budget || 0) - Number(selectedOffer?.price?.total || 0)
     : Number(flightWidget?.budget || 0);
 
-  // -----------------------------
-  // Small helper to render one offer
-  // -----------------------------
+  // ----------------------------------------------------
+  // Format ISO datetime string into something shorter
+  // ----------------------------------------------------
+  function formatDateTime(value) {
+    if (!value) return "-";
+    return value.replace("T", " ");
+  }
+
+  // ----------------------------------------------------
+  // Render one flight offer card
+  // ----------------------------------------------------
   function renderOffer(offer, idx) {
     const itineraries = offer?.itineraries || [];
     const total = offer?.price?.total || "-";
@@ -124,12 +151,54 @@ export default function Chat() {
           padding: "16px",
           marginBottom: "16px",
           background: "#111",
+          position: "relative",
         }}
       >
-        <h3 style={{ marginTop: 0 }}>{total} EUR</h3>
+        {/* ------------------------------------------------
+            Select button in top-right corner
+            ------------------------------------------------ */}
+        {!selectedOffer ? (
+          <button
+            onClick={() => handleSelectOffer(offer)}
+            style={{
+              position: "absolute",
+              top: "16px",
+              right: "16px",
+              padding: "10px 16px",
+              borderRadius: "8px",
+              border: "none",
+              background: "#2d6cdf",
+              color: "white",
+              cursor: "pointer",
+              fontWeight: "bold",
+            }}
+          >
+            Select
+          </button>
+        ) : (
+          <button
+            onClick={handleClearSelection}
+            style={{
+              position: "absolute",
+              top: "16px",
+              right: "16px",
+              padding: "10px 16px",
+              borderRadius: "8px",
+              border: "none",
+              background: "#666",
+              color: "white",
+              cursor: "pointer",
+              fontWeight: "bold",
+            }}
+          >
+            Change selection
+          </button>
+        )}
+
+        <h3 style={{ marginTop: 0, marginRight: "140px" }}>{total} EUR</h3>
 
         {itineraries.map((itinerary, itinIdx) => (
-          <div key={itinIdx} style={{ marginBottom: "12px" }}>
+          <div key={itinIdx} style={{ marginBottom: "18px" }}>
             <div>
               <strong>{itinIdx === 0 ? "Outbound" : "Return"}</strong>
             </div>
@@ -143,8 +212,8 @@ export default function Chat() {
               <ul>
                 {(itinerary.segments || []).map((seg, segIdx) => (
                   <li key={segIdx}>
-                    {seg.departure?.iataCode} ({seg.departure?.at}) →{" "}
-                    {seg.arrival?.iataCode} ({seg.arrival?.at}) | Carrier:{" "}
+                    {seg.departure?.iataCode} ({formatDateTime(seg.departure?.at)}) →{" "}
+                    {seg.arrival?.iataCode} ({formatDateTime(seg.arrival?.at)}) | Carrier:{" "}
                     {seg.carrierCode} Flight: {seg.number}
                   </li>
                 ))}
@@ -156,19 +225,19 @@ export default function Chat() {
             </div>
           </div>
         ))}
-
-        {/* Show Select button before selection, and Change selection after */}
-        {!selectedOffer ? (
-          <button onClick={() => handleSelectOffer(offer)}>Select</button>
-        ) : (
-          <button onClick={() => setSelectedOffer(null)}>Change selection</button>
-        )}
       </div>
     );
   }
 
   return (
-    <div style={{ padding: "24px", color: "white", background: "#0f0f0f", minHeight: "100vh" }}>
+    <div
+      style={{
+        padding: "24px",
+        color: "white",
+        background: "#0f0f0f",
+        minHeight: "100vh",
+      }}
+    >
       <div style={{ marginBottom: "16px" }}>
         <Link to="/logout" style={{ color: "#8ab4ff" }}>
           Logout
@@ -177,12 +246,14 @@ export default function Chat() {
 
       <h1>CHAT</h1>
 
-      {/* Prompt input */}
+      {/* ------------------------------------------------
+          Chat input
+          ------------------------------------------------ */}
       <div style={{ marginBottom: "16px" }}>
         <input
           value={prompt}
           onChange={(e) => setPrompt(e.target.value)}
-          placeholder='Try: "I want to go to Paris 15.03.2026 until 25.03.2026 with 5000 euros"'
+          placeholder='Try: "I want to go to Amsterdam 20.03.2026 until 25.03.2026 with 5000 euros"'
           style={{ width: "80%", padding: "12px" }}
           onKeyDown={(e) => {
             if (e.key === "Enter") send();
@@ -193,7 +264,9 @@ export default function Chat() {
         </button>
       </div>
 
-      {/* Text transcript */}
+      {/* ------------------------------------------------
+          Chat transcript
+          ------------------------------------------------ */}
       <pre
         style={{
           whiteSpace: "pre-wrap",
@@ -206,7 +279,9 @@ export default function Chat() {
         {out}
       </pre>
 
-      {/* Flight widget */}
+      {/* ------------------------------------------------
+          Flight widget
+          ------------------------------------------------ */}
       {flightWidget && (
         <div
           style={{
@@ -242,7 +317,9 @@ export default function Chat() {
             )}
           </div>
 
-          {/* Visible money counter */}
+          {/* ------------------------------------------------
+              Visible money counter
+              ------------------------------------------------ */}
           <div
             style={{
               marginBottom: "16px",
@@ -253,10 +330,13 @@ export default function Chat() {
               fontWeight: "bold",
             }}
           >
-            Remaining budget: {Number.isFinite(remainingBudget) ? remainingBudget.toFixed(2) : "-"} EUR
+            Remaining budget:{" "}
+            {Number.isFinite(remainingBudget) ? remainingBudget.toFixed(2) : "-"} EUR
           </div>
 
-          {/* Optional start address for route calculation */}
+          {/* ------------------------------------------------
+              Start address for route planning
+              ------------------------------------------------ */}
           <div style={{ marginBottom: "16px" }}>
             <label>
               <strong>Start address:</strong>
@@ -272,20 +352,35 @@ export default function Chat() {
 
           <h3>Results (cheapest first)</h3>
 
+          {/* ------------------------------------------------
+              If no offer selected -> show all offers
+              If selected -> show only selected offer
+              ------------------------------------------------ */}
           {(flightWidget.offers || [])
             .filter((offer) => {
-              // Before selection: show all offers
               if (!selectedOffer) return true;
-
-              // After selection: keep only selected one visible
               return offer === selectedOffer;
             })
             .map((offer, idx) => renderOffer(offer, idx))}
 
-          {/* Generate plan button appears only after selecting one flight */}
+          {/* ------------------------------------------------
+              Show Generate plan only after user selects a flight
+              ------------------------------------------------ */}
           {selectedOffer && (
             <div style={{ marginTop: "20px" }}>
-              <button onClick={handleGeneratePlan} disabled={planLoading} style={{ padding: "12px 18px" }}>
+              <button
+                onClick={handleGeneratePlan}
+                disabled={planLoading}
+                style={{
+                  padding: "12px 18px",
+                  borderRadius: "8px",
+                  border: "none",
+                  background: "#1f8f4e",
+                  color: "white",
+                  cursor: "pointer",
+                  fontWeight: "bold",
+                }}
+              >
                 {planLoading ? "Generating plan..." : "Generate plan"}
               </button>
             </div>
@@ -293,7 +388,9 @@ export default function Chat() {
         </div>
       )}
 
-      {/* Generated trip plan */}
+      {/* ------------------------------------------------
+          Generated trip plan section
+          ------------------------------------------------ */}
       {generatedPlan && (
         <div
           style={{
