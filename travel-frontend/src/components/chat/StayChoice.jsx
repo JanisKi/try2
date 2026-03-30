@@ -1,10 +1,7 @@
 import React from "react";
 
 /**
- * After a user selects a flight, ask where they are staying.
- * They can either:
- * 1. search hotels automatically
- * 2. skip hotels and type their own destination address
+ * After user selects a flight, ask where they will stay.
  */
 export default function StayChoice({
   hotelLoading,
@@ -23,7 +20,7 @@ export default function StayChoice({
     >
       <h2 style={{ marginTop: 0 }}>Where are you staying?</h2>
 
-      <p style={{ opacity: 0.9 }}>
+      <p style={{ opacity: 0.9, marginBottom: "16px" }}>
         Choose a hotel for your stay, or continue with your own destination address.
       </p>
 
