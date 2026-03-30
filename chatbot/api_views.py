@@ -518,4 +518,4 @@ class GenerateTripPlanView(APIView):
             "arrival_at": arrival_at,
             "leg1": leg1,
             "leg2": leg2,
-        })
+        })# Comment for commit
