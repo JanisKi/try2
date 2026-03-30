@@ -1,7 +1,10 @@
 import React from "react";
 
 /**
- * After user selects a flight, ask where they will stay.
+ * After the user selects a flight, ask where they will stay.
+ * They can either:
+ * 1) search hotels automatically
+ * 2) skip hotel search and type destination address manually
  */
 export default function StayChoice({
   hotelLoading,
