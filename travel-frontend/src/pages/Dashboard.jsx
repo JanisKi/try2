@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import NavBar from "../components/NavBar";
-import ChatPanel from "../panels/ChatPanel";
 import FlightPanel from "../panels/FlightPanel";
+import TravelChat from "../components/chat/TravelChat";
 import { api } from "../api";
 
 // Dashboard is the main page with tabs and a big content box
@@ -36,7 +36,7 @@ export default function Dashboard() {
         {/* Big content box */}
         <div className="panel">
           {activeTab === "chat" ? (
-            <ChatPanel onNewIntent={refreshIntent} />
+            <TravelChat />
           ) : (
             <FlightPanel latestIntent={latestIntent} />
           )}

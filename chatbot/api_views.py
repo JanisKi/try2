@@ -29,6 +29,27 @@ DEPARTURE_AIRPORT_BUFFER_MINUTES = 90
 ARRIVAL_AIRPORT_BUFFER_MINUTES = 60
 
 
+def convert_to_eur(amount: float, currency: str) -> float:
+    """
+    Convert amount to EUR.
+    For now, keep it simple with a small static table.
+    Later you can replace this with a real FX API.
+    """
+    rates_to_eur = {
+        "EUR": 1.0,
+        "GBP": 1.17,   # example rate
+        "USD": 0.92,   # example rate
+        "NOK": 0.085,  # example rate
+    }
+
+    rate = rates_to_eur.get((currency or "EUR").upper())
+    if rate is None:
+        # If currency unknown, assume same value to avoid crash
+        return amount
+
+    return amount * rate
+
+
 def build_preview(amadeus_json: dict, limit: int = 8):
     """
     Return cheapest-first preview list for frontend.
@@ -644,6 +665,9 @@ class SearchHotelsView(APIView):
             except Exception:
                 price_total = 0.0
 
+            currency = (offer.get("price") or {}).get("currency") or "EUR"
+            price_total_eur = convert_to_eur(price_total, currency)
+
             address_obj = hotel.get("address") or {}
             results.append(
                 {
@@ -653,7 +677,7 @@ class SearchHotelsView(APIView):
                     "address": ", ".join(
                         p for p in [
                             hotel.get("name"),
-                            * (address_obj.get("lines") or []),
+                            *(address_obj.get("lines") or []),
                             address_obj.get("cityName"),
                             address_obj.get("countryCode"),
                         ] if p
@@ -661,8 +685,14 @@ class SearchHotelsView(APIView):
                     "geo": hotel.get("geoCode") or {},
                     "check_in": offer.get("checkInDate"),
                     "check_out": offer.get("checkOutDate"),
+
+                    # original hotel price
                     "price_total": price_total,
-                    "currency": (offer.get("price") or {}).get("currency"),
+                    "currency": currency,
+
+                    # normalized price for budget logic
+                    "price_total_eur": round(price_total_eur, 2),
+
                     "room_description": (
                         ((offer.get("room") or {}).get("description") or {}).get("text")
                         or ""
@@ -670,12 +700,12 @@ class SearchHotelsView(APIView):
                 }
             )
 
-        results.sort(key=lambda x: x["price_total"])
+        results.sort(key=lambda x: x["price_total_eur"])
 
         if budget_remaining is not None:
             try:
                 budget_left = float(budget_remaining)
-                filtered = [h for h in results if h["price_total"] <= budget_left]
+                filtered = [h for h in results if h["price_total_eur"] <= budget_left]
                 if filtered:
                     results = filtered
             except Exception:
