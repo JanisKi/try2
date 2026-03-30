@@ -15,6 +15,8 @@ from travel.services.amadeus import (
     search_flights,
     search_locations,
     pick_first_airport_iata,
+    search_hotels_by_city,
+    search_hotel_offers_by_hotel_id,
 )
 from travel.services.openrouteservice import geocode_address, route_driving
 from travel.services.google_routes import compute_transit_route, summarize_transit_route
@@ -651,6 +653,7 @@ class SearchHotelsView(APIView):
                     "address": ", ".join(
                         p for p in [
                             hotel.get("name"),
+                            * (address_obj.get("lines") or []),
                             address_obj.get("cityName"),
                             address_obj.get("countryCode"),
                         ] if p
