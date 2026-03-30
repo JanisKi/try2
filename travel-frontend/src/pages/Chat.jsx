@@ -1,95 +1,240 @@
-// travel-frontend/src/pages/Chat.jsx
-
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../api";
 
+import ChatTranscript from "../components/chat/ChatTranscript";
+import FlightResults from "../components/chat/FlightResults";
+import StayChoice from "../components/chat/StayChoice";
+import HotelResults from "../components/chat/HotelResults";
+import TripPlanForm from "../components/chat/TripPlanForm";
+import GeneratedPlan from "../components/chat/GeneratedPlan";
+
+/**
+ * Main Chat page
+ *
+ * What this page does:
+ * 1. Sends chat text to backend
+ * 2. Shows flight results
+ * 3. Lets user select one flight
+ * 4. Asks where they are staying
+ * 5. Lets user choose hotel OR custom destination address
+ * 6. Collects route preferences
+ * 7. Requests a generated trip plan from backend
+ */
 export default function Chat() {
-  // ----------------------------------------------------
-  // Main chat input/output state
-  // ----------------------------------------------------
+  // -----------------------------
+  // Basic chat state
+  // -----------------------------
   const [prompt, setPrompt] = useState("");
   const [out, setOut] = useState("");
 
-  // ----------------------------------------------------
-  // Flight widget data returned from backend
-  // ----------------------------------------------------
+  // -----------------------------
+  // Flight data from backend
+  // -----------------------------
   const [flightWidget, setFlightWidget] = useState(null);
 
-  // ----------------------------------------------------
-  // Which flight offer the user selected
-  // ----------------------------------------------------
+  // -----------------------------
+  // Selected flight
+  // -----------------------------
   const [selectedOffer, setSelectedOffer] = useState(null);
+  const [selectedOfferKey, setSelectedOfferKey] = useState("");
 
-  // ----------------------------------------------------
-  // Generated plan returned from backend
-  // ----------------------------------------------------
+  // -----------------------------
+  // UI flow step
+  // "chat" -> default
+  // "stay-choice" -> after flight selected
+  // "hotel-select" -> if user chose hotel search
+  // "route-details" -> final route form
+  // -----------------------------
+  const [step, setStep] = useState("chat");
+
+  // -----------------------------
+  // Hotel state
+  // -----------------------------
+  const [stayMode, setStayMode] = useState(null); // "hotel" | "address" | null
+  const [hotelWidget, setHotelWidget] = useState(null);
+  const [hotelLoading, setHotelLoading] = useState(false);
+  const [selectedHotel, setSelectedHotel] = useState(null);
+
+  // -----------------------------
+  // Trip route form state
+  // -----------------------------
+  const [startAddress, setStartAddress] = useState("");
+  const [arrivalDestinationAddress, setArrivalDestinationAddress] = useState("");
+
+  const [toAirportMode, setToAirportMode] = useState("drive");
+  const [fromAirportMode, setFromAirportMode] = useState("transit");
+  const [returnToAirportMode, setReturnToAirportMode] = useState("transit");
+  const [returnHomeMode, setReturnHomeMode] = useState("drive");
+
+  // -----------------------------
+  // Final generated plan
+  // -----------------------------
   const [generatedPlan, setGeneratedPlan] = useState(null);
-
-  // ----------------------------------------------------
-  // Loading state for generate-plan button
-  // ----------------------------------------------------
   const [planLoading, setPlanLoading] = useState(false);
 
-  // ----------------------------------------------------
-  // User start address for route calculation
-  // ----------------------------------------------------
-  const [startAddress, setStartAddress] = useState("Ogre Mednieku iela 23");
+  /**
+   * Helper to append one new line to transcript.
+   */
+  function appendTranscriptLine(prefix, text) {
+    setOut((prev) => `${prev}${prefix}: ${text}\n`);
+  }
 
-  // ----------------------------------------------------
-  // Send chat message to backend
-  // ----------------------------------------------------
-  const send = async () => {
-    if (!prompt.trim()) return;
+  /**
+   * Reset flow that depends on flight selection.
+   * We keep transcript, but clear UI state.
+   */
+  function resetSelectionFlow() {
+    setSelectedOffer(null);
+    setSelectedOfferKey("");
+    setStep("chat");
 
-    const userText = prompt;
+    setStayMode(null);
+    setHotelWidget(null);
+    setHotelLoading(false);
+    setSelectedHotel(null);
+
+    setArrivalDestinationAddress("");
+    setGeneratedPlan(null);
+  }
+
+  /**
+   * Clear everything on screen.
+   */
+  function handleClearAll() {
+    setPrompt("");
+    setOut("");
+    setFlightWidget(null);
+    resetSelectionFlow();
+  }
+
+  /**
+   * Send prompt to backend chat endpoint.
+   * Backend is expected to return:
+   * - answer
+   * - flight_widget
+   */
+  async function send() {
+    const userText = prompt.trim();
+    if (!userText) return;
+
     setPrompt("");
 
-    // Reset older plan + selection when user asks a new question
-    setGeneratedPlan(null);
-    setSelectedOffer(null);
+    // Clear previous result flow for a fresh search
+    setFlightWidget(null);
+    resetSelectionFlow();
 
-    // Add user message to transcript
-    setOut((prev) => prev + `YOU: ${userText}\n`);
+    appendTranscriptLine("YOU", userText);
 
     try {
       const r = await api.post("/chat/send/", { prompt: userText });
 
-      // Add assistant answer to transcript
-      setOut((prev) => prev + `BOT: ${r.data.answer}\n`);
+      appendTranscriptLine("BOT", r.data?.answer || "Done.");
 
-      // Save returned flight widget data
-      setFlightWidget(r.data.flight_widget || null);
+      setFlightWidget(r.data?.flight_widget || null);
     } catch (err) {
       console.error(err);
-      setOut((prev) => prev + `BOT: Error: Request failed.\n`);
+      appendTranscriptLine("BOT", "Error: request failed.");
     }
-  };
+  }
 
-  // ----------------------------------------------------
-  // User selects one flight
-  // ----------------------------------------------------
-  function handleSelectOffer(offer) {
+  /**
+   * User selects one specific flight offer.
+   * Then we move to stay choice step.
+   */
+  function handleSelectOffer(offer, offerKey) {
     setSelectedOffer(offer);
+    setSelectedOfferKey(offerKey);
 
-    // Reset old plan if a different flight is selected
+    // Reset downstream state every time user changes flight
+    setStayMode(null);
+    setHotelWidget(null);
+    setSelectedHotel(null);
+    setArrivalDestinationAddress("");
     setGeneratedPlan(null);
+
+    setStep("stay-choice");
   }
 
-  // ----------------------------------------------------
-  // Clear selected flight so user can pick another one
-  // ----------------------------------------------------
-  function handleClearSelection() {
-    setSelectedOffer(null);
-    setGeneratedPlan(null);
+  /**
+   * User wants hotel search.
+   * We call backend immediately and show hotel results.
+   */
+  async function handleChooseHotel() {
+    if (!selectedOffer || !flightWidget) {
+      alert("Please select a flight first.");
+      return;
+    }
+
+    try {
+      setHotelLoading(true);
+      setStep("hotel-select");
+
+      const res = await api.post("/chat/search-hotels/", {
+        selected_offer: selectedOffer,
+        destination_city:
+          flightWidget?.destination_city || flightWidget?.destination_iata || "",
+        adults: flightWidget?.adults || 1,
+        budget_remaining: remainingBudget,
+      });
+
+      setStayMode("hotel");
+      setHotelWidget(res.data || null);
+    } catch (err) {
+      console.error(err);
+      const detail =
+        err?.response?.data?.detail ||
+        "Hotel search failed. You can still use a custom destination address.";
+      alert(detail);
+
+      // Keep the user moving forward even if hotel search fails
+      setStep("stay-choice");
+    } finally {
+      setHotelLoading(false);
+    }
   }
 
-  // ----------------------------------------------------
-  // Generate plan using selected flight
-  // ----------------------------------------------------
+  /**
+   * User skips hotel search and wants to type destination manually.
+   */
+  function handleUseCustomAddress() {
+    setStayMode("address");
+    setSelectedHotel(null);
+    setHotelWidget(null);
+    setArrivalDestinationAddress("");
+    setGeneratedPlan(null);
+    setStep("route-details");
+  }
+
+  /**
+   * User selects a hotel.
+   * We auto-fill destination address from hotel.
+   */
+  function handleSelectHotel(hotel) {
+    setSelectedHotel(hotel);
+    setStayMode("hotel");
+    setArrivalDestinationAddress(hotel?.address || hotel?.name || "");
+    setGeneratedPlan(null);
+    setStep("route-details");
+  }
+
+  /**
+   * Send selected flight + address/mode choices to backend
+   * to generate the full trip plan.
+   */
   async function handleGeneratePlan() {
     if (!selectedOffer || !flightWidget) {
       alert("Please select a flight first.");
+      return;
+    }
+
+    if (!startAddress.trim()) {
+      alert("Please enter your starting address.");
+      return;
+    }
+
+    if (!arrivalDestinationAddress.trim()) {
+      alert("Please choose a hotel or enter your destination address.");
       return;
     }
 
@@ -97,353 +242,222 @@ export default function Chat() {
       setPlanLoading(true);
 
       const res = await api.post("/chat/generate-trip-plan/", {
-        // Full selected Amadeus offer
+        // Selected flight
         selected_offer: selectedOffer,
 
-        // Extra context for backend
-        origin: flightWidget.origin_iata || flightWidget.origin_city,
-        destination: flightWidget.destination_iata || flightWidget.destination_city,
-        departure_date: flightWidget.departure_date,
-        return_date: flightWidget.return_enabled ? flightWidget.return_date : null,
-        adults: flightWidget.adults,
-        budget: flightWidget.budget,
-        max_stops: flightWidget.max_stops,
+        // Flight context
+        origin: flightWidget?.origin_iata || flightWidget?.origin_city,
+        destination: flightWidget?.destination_iata || flightWidget?.destination_city,
+        departure_date: flightWidget?.departure_date,
+        return_date: flightWidget?.return_enabled ? flightWidget?.return_date : null,
+        adults: flightWidget?.adults,
+        budget: flightWidget?.budget,
+        max_stops: flightWidget?.max_stops,
+
+        // Route planning fields
         start_address: startAddress,
+        arrival_destination_address: arrivalDestinationAddress,
+        to_airport_mode: toAirportMode,
+        from_airport_mode: fromAirportMode,
+        return_to_airport_mode: returnToAirportMode,
+        return_home_mode: returnHomeMode,
       });
 
       setGeneratedPlan(res.data);
     } catch (err) {
       console.error(err);
-      alert("Failed to generate trip plan.");
+      const detail =
+        err?.response?.data?.detail || "Failed to generate trip plan.";
+      alert(detail);
     } finally {
       setPlanLoading(false);
     }
   }
 
-  // ----------------------------------------------------
-  // Remaining budget shown in UI
-  // ----------------------------------------------------
-  const remainingBudget = selectedOffer
-    ? Number(flightWidget?.budget || 0) - Number(selectedOffer?.price?.total || 0)
-    : Number(flightWidget?.budget || 0);
-
-  // ----------------------------------------------------
-  // Format ISO datetime string into something shorter
-  // ----------------------------------------------------
-  function formatDateTime(value) {
-    if (!value) return "-";
-    return value.replace("T", " ");
-  }
-
-  // ----------------------------------------------------
-  // Render one flight offer card
-  // ----------------------------------------------------
-  function renderOffer(offer, idx) {
-    const itineraries = offer?.itineraries || [];
-    const total = offer?.price?.total || "-";
-
-    return (
-      <div
-        key={idx}
-        style={{
-          border: "1px solid #333",
-          borderRadius: "12px",
-          padding: "16px",
-          marginBottom: "16px",
-          background: "#111",
-          position: "relative",
-        }}
-      >
-        {/* ------------------------------------------------
-            Select button in top-right corner
-            ------------------------------------------------ */}
-        {!selectedOffer ? (
-          <button
-            onClick={() => handleSelectOffer(offer)}
-            style={{
-              position: "absolute",
-              top: "16px",
-              right: "16px",
-              padding: "10px 16px",
-              borderRadius: "8px",
-              border: "none",
-              background: "#2d6cdf",
-              color: "white",
-              cursor: "pointer",
-              fontWeight: "bold",
-            }}
-          >
-            Select
-          </button>
-        ) : (
-          <button
-            onClick={handleClearSelection}
-            style={{
-              position: "absolute",
-              top: "16px",
-              right: "16px",
-              padding: "10px 16px",
-              borderRadius: "8px",
-              border: "none",
-              background: "#666",
-              color: "white",
-              cursor: "pointer",
-              fontWeight: "bold",
-            }}
-          >
-            Change selection
-          </button>
-        )}
-
-        <h3 style={{ marginTop: 0, marginRight: "140px" }}>{total} EUR</h3>
-
-        {itineraries.map((itinerary, itinIdx) => (
-          <div key={itinIdx} style={{ marginBottom: "18px" }}>
-            <div>
-              <strong>{itinIdx === 0 ? "Outbound" : "Return"}</strong>
-            </div>
-
-            <div style={{ marginTop: "6px" }}>
-              Duration: {itinerary.duration || "-"}
-            </div>
-
-            <div style={{ marginTop: "8px" }}>
-              <strong>Segments:</strong>
-              <ul>
-                {(itinerary.segments || []).map((seg, segIdx) => (
-                  <li key={segIdx}>
-                    {seg.departure?.iataCode} ({formatDateTime(seg.departure?.at)}) →{" "}
-                    {seg.arrival?.iataCode} ({formatDateTime(seg.arrival?.at)}) | Carrier:{" "}
-                    {seg.carrierCode} Flight: {seg.number}
-                  </li>
-                ))}
-              </ul>
-            </div>
-
-            <div>
-              Stops: {Math.max((itinerary.segments || []).length - 1, 0)}
-            </div>
-          </div>
-        ))}
-      </div>
-    );
-  }
+  /**
+   * Budget left after selecting flight.
+   * Used for hotel search filtering.
+   */
+  const remainingBudget = useMemo(() => {
+    const budget = Number(flightWidget?.budget || 0);
+    const selectedPrice = Number(selectedOffer?.price?.total || 0);
+    const result = budget - selectedPrice;
+    return Number.isFinite(result) ? result : 0;
+  }, [flightWidget, selectedOffer]);
 
   return (
     <div
       style={{
-        padding: "24px",
-        color: "white",
-        background: "#0f0f0f",
         minHeight: "100vh",
+        background: "#0f1115",
+        color: "white",
+        padding: "24px",
       }}
     >
-      <div style={{ marginBottom: "16px" }}>
-        <Link to="/logout" style={{ color: "#8ab4ff" }}>
-          Logout
-        </Link>
-      </div>
-
-      <h1>CHAT</h1>
-
-      {/* ------------------------------------------------
-          Chat input
-          ------------------------------------------------ */}
-      <div style={{ marginBottom: "16px" }}>
-        <input
-          value={prompt}
-          onChange={(e) => setPrompt(e.target.value)}
-          placeholder='Try: "I want to go to Amsterdam 20.03.2026 until 25.03.2026 with 5000 euros"'
-          style={{ width: "80%", padding: "12px" }}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") send();
-          }}
-        />
-        <button onClick={send} style={{ marginLeft: "8px", padding: "12px 18px" }}>
-          Send
-        </button>
-      </div>
-
-      {/* ------------------------------------------------
-          Chat transcript
-          ------------------------------------------------ */}
-      <pre
+      <div
         style={{
-          whiteSpace: "pre-wrap",
-          background: "#111",
-          padding: "16px",
-          borderRadius: "10px",
-          border: "1px solid #222",
+          maxWidth: "1400px",
+          margin: "0 auto",
+          padding: "24px",
+          borderRadius: "18px",
+          background: "#111317",
+          border: "1px solid #222733",
         }}
       >
-        {out}
-      </pre>
-
-      {/* ------------------------------------------------
-          Flight widget
-          ------------------------------------------------ */}
-      {flightWidget && (
         <div
           style={{
-            marginTop: "20px",
-            border: "1px solid #222",
-            borderRadius: "14px",
-            padding: "16px",
-            background: "#141414",
+            display: "flex",
+            justifyContent: "space-between",
+            gap: "12px",
+            alignItems: "center",
+            marginBottom: "18px",
+            flexWrap: "wrap",
           }}
         >
-          <h2>Flight search widget</h2>
+          <h1 style={{ margin: 0 }}>CHAT</h1>
 
-          <div style={{ display: "flex", gap: "12px", flexWrap: "wrap", marginBottom: "12px" }}>
-            <div>
-              <strong>From:</strong> {flightWidget.origin_iata}
-            </div>
-            <div>
-              <strong>To:</strong> {flightWidget.destination_city}
-            </div>
-            <div>
-              <strong>Departure:</strong> {flightWidget.departure_date}
-            </div>
-            <div>
-              <strong>Adults:</strong> {flightWidget.adults}
-            </div>
-            <div>
-              <strong>Budget:</strong> {flightWidget.budget ?? "-"} EUR
-            </div>
-            {flightWidget.return_enabled && (
-              <div>
-                <strong>Return:</strong> {flightWidget.return_date}
-              </div>
-            )}
+          <div>
+            <Link
+              to="/logout"
+              style={{
+                color: "#9fc2ff",
+                textDecoration: "none",
+                fontWeight: "bold",
+              }}
+            >
+              Logout
+            </Link>
           </div>
+        </div>
 
-          {/* ------------------------------------------------
-              Visible money counter
-              ------------------------------------------------ */}
-          <div
+        {/* Chat input row */}
+        <div
+          style={{
+            display: "flex",
+            gap: "10px",
+            alignItems: "center",
+            flexWrap: "wrap",
+          }}
+        >
+          <input
+            value={prompt}
+            onChange={(e) => setPrompt(e.target.value)}
+            placeholder='Try: "flight from Riga to Amsterdam tomorrow, 1 adult"'
             style={{
-              marginBottom: "16px",
-              padding: "10px 12px",
-              background: "#1b1b1b",
-              borderRadius: "10px",
-              border: "1px solid #333",
+              flex: 1,
+              minWidth: "280px",
+              padding: "12px",
+              borderRadius: "8px",
+              border: "1px solid #3a4250",
+              background: "#f5f5f5",
+              color: "#111",
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") send();
+            }}
+          />
+
+          <button
+            onClick={send}
+            style={{
+              padding: "12px 18px",
+              borderRadius: "8px",
+              border: "none",
+              background: "#f5f5f5",
+              color: "#111",
+              cursor: "pointer",
               fontWeight: "bold",
             }}
           >
-            Remaining budget:{" "}
-            {Number.isFinite(remainingBudget) ? remainingBudget.toFixed(2) : "-"} EUR
-          </div>
+            Send
+          </button>
 
-          {/* ------------------------------------------------
-              Start address for route planning
-              ------------------------------------------------ */}
-          <div style={{ marginBottom: "16px" }}>
-            <label>
-              <strong>Start address:</strong>
-            </label>
-            <br />
-            <input
-              value={startAddress}
-              onChange={(e) => setStartAddress(e.target.value)}
-              placeholder="Enter your home/start address"
-              style={{ width: "420px", maxWidth: "100%", padding: "10px", marginTop: "8px" }}
-            />
-          </div>
-
-          <h3>Results (cheapest first)</h3>
-
-          {/* ------------------------------------------------
-              If no offer selected -> show all offers
-              If selected -> show only selected offer
-              ------------------------------------------------ */}
-          {(flightWidget.offers || [])
-            .filter((offer) => {
-              if (!selectedOffer) return true;
-              return offer === selectedOffer;
-            })
-            .map((offer, idx) => renderOffer(offer, idx))}
-
-          {/* ------------------------------------------------
-              Show Generate plan only after user selects a flight
-              ------------------------------------------------ */}
-          {selectedOffer && (
-            <div style={{ marginTop: "20px" }}>
-              <button
-                onClick={handleGeneratePlan}
-                disabled={planLoading}
-                style={{
-                  padding: "12px 18px",
-                  borderRadius: "8px",
-                  border: "none",
-                  background: "#1f8f4e",
-                  color: "white",
-                  cursor: "pointer",
-                  fontWeight: "bold",
-                }}
-              >
-                {planLoading ? "Generating plan..." : "Generate plan"}
-              </button>
-            </div>
-          )}
+          <button
+            onClick={handleClearAll}
+            style={{
+              padding: "12px 18px",
+              borderRadius: "8px",
+              border: "none",
+              background: "#f5f5f5",
+              color: "#111",
+              cursor: "pointer",
+              fontWeight: "bold",
+            }}
+          >
+            Clear
+          </button>
         </div>
-      )}
 
-      {/* ------------------------------------------------
-          Generated trip plan section
-          ------------------------------------------------ */}
-      {generatedPlan && (
-        <div
-          style={{
-            marginTop: "24px",
-            border: "1px solid #2d2d2d",
-            borderRadius: "14px",
-            padding: "16px",
-            background: "#151515",
-          }}
-        >
-          <h2>Your trip plan</h2>
+        {/* Transcript */}
+        <ChatTranscript text={out} />
 
-          <p>
-            <strong>Start address:</strong> {generatedPlan.start_address || "-"}
-          </p>
+        {/* Flight results */}
+        {flightWidget && (
+          <FlightResults
+            flightWidget={flightWidget}
+            selectedOfferKey={selectedOfferKey}
+            remainingBudget={remainingBudget}
+            onSelectOffer={handleSelectOffer}
+          />
+        )}
 
-          <p>
-            <strong>Leave home at:</strong> {generatedPlan.leave_home_at || "-"}
-          </p>
+        {/* Stay choice */}
+        {selectedOffer && step === "stay-choice" && (
+          <StayChoice
+            hotelLoading={hotelLoading}
+            onChooseHotel={handleChooseHotel}
+            onUseCustomAddress={handleUseCustomAddress}
+          />
+        )}
 
-          <p>
-            <strong>Drive time to airport:</strong>{" "}
-            {generatedPlan.drive_minutes != null ? `${generatedPlan.drive_minutes} min` : "-"}
-          </p>
+        {/* Hotel list */}
+        {selectedOffer && step === "hotel-select" && (
+          <HotelResults
+            hotelLoading={hotelLoading}
+            hotelWidget={hotelWidget}
+            onSelectHotel={handleSelectHotel}
+            onUseCustomAddress={handleUseCustomAddress}
+          />
+        )}
 
-          <p>
-            <strong>Flight:</strong> {generatedPlan.flight_summary || "-"}
-          </p>
+        {/* Route planning form */}
+        {selectedOffer && step === "route-details" && (
+          <TripPlanForm
+            flightWidget={flightWidget}
+            selectedHotel={selectedHotel}
+            startAddress={startAddress}
+            setStartAddress={setStartAddress}
+            arrivalDestinationAddress={arrivalDestinationAddress}
+            setArrivalDestinationAddress={setArrivalDestinationAddress}
+            toAirportMode={toAirportMode}
+            setToAirportMode={setToAirportMode}
+            fromAirportMode={fromAirportMode}
+            setFromAirportMode={setFromAirportMode}
+            returnToAirportMode={returnToAirportMode}
+            setReturnToAirportMode={setReturnToAirportMode}
+            returnHomeMode={returnHomeMode}
+            setReturnHomeMode={setReturnHomeMode}
+            planLoading={planLoading}
+            onGeneratePlan={handleGeneratePlan}
+          />
+        )}
 
-          <p>
-            <strong>Remaining budget:</strong>{" "}
-            {generatedPlan.remaining_budget != null
-              ? `${Number(generatedPlan.remaining_budget).toFixed(2)} EUR`
-              : "-"}
-          </p>
+        {/* Final generated plan */}
+        {generatedPlan && <GeneratedPlan plan={generatedPlan} />}
 
-          <p>
-            <strong>Route:</strong>{" "}
-            {generatedPlan.route_url ? (
-              <a
-                href={generatedPlan.route_url}
-                target="_blank"
-                rel="noreferrer"
-                style={{ color: "#8ab4ff" }}
-              >
-                Open route
-              </a>
-            ) : (
-              "-"
-            )}
-          </p>
-        </div>
-      )}
+        {/* Small debug helper */}
+        {selectedOffer && (
+          <div style={{ marginTop: "20px", opacity: 0.75, fontSize: "14px" }}>
+            Current step: <strong>{step}</strong>
+            {stayMode ? (
+              <>
+                {" "}
+                | Stay mode: <strong>{stayMode}</strong>
+              </>
+            ) : null}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
