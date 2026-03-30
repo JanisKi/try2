@@ -126,6 +126,8 @@ export default function FlightWidget({ initial }) {
 
   const [startAddress, setStartAddress] = useState("");
   const [toAirportMode, setToAirportMode] = useState("drive");
+  const [returnToAirportMode, setReturnToAirportMode] = useState("drive");
+  const [returnHomeMode, setReturnHomeMode] = useState("drive");
 
   const [arrivalDestinationAddress, setArrivalDestinationAddress] = useState("");
   const [fromAirportMode, setFromAirportMode] = useState("drive");
@@ -243,6 +245,9 @@ export default function FlightWidget({ initial }) {
 
         arrival_destination_address: arrivalDestinationAddress.trim(),
         from_airport_mode: fromAirportMode,
+
+        return_to_airport_mode: returnToAirportMode,
+        return_home_mode: returnHomeMode,
       });
 
       setGeneratedPlan(res.data);
@@ -443,6 +448,36 @@ export default function FlightWidget({ initial }) {
           <option value="transit">Public transport</option>
         </select>
       </div>
+      
+      <div style={{ marginBottom: 16 }}>
+        <label>
+          <strong>How will you get to the return airport?</strong>
+        </label>
+        <br />
+        <select
+          value={returnToAirportMode}
+          onChange={(e) => setReturnToAirportMode(e.target.value)}
+          style={{ marginTop: 8 }}
+        >
+          <option value="drive">Drive / car</option>
+          <option value="transit">Public transport</option>
+        </select>
+      </div>
+
+      <div style={{ marginBottom: 16 }}>
+        <label>
+          <strong>How will you get home after returning?</strong>
+        </label>
+        <br />
+        <select
+          value={returnHomeMode}
+          onChange={(e) => setReturnHomeMode(e.target.value)}
+          style={{ marginTop: 8 }}
+        >
+          <option value="drive">Drive / car</option>
+          <option value="transit">Public transport</option>
+        </select>
+      </div>
 
       {filteredSortedOffers.length > 0 && (
         <div>
@@ -602,6 +637,44 @@ export default function FlightWidget({ initial }) {
               </p>
 
               <TransitSteps steps={generatedPlan.leg2.steps} />
+            </div>
+          )}
+          
+          {generatedPlan.leg3 && (
+            <div style={{ marginTop: 20 }}>
+              <h3>Before return flight: go to return airport</h3>
+              <p><strong>Mode:</strong> {generatedPlan.leg3.mode}</p>
+              <p><strong>From:</strong> {generatedPlan.leg3.start_address}</p>
+              <p><strong>To:</strong> {generatedPlan.leg3.destination}</p>
+              <p><strong>Leave at:</strong> {generatedPlan.leg3.leave_at || "-"}</p>
+              <p><strong>Duration:</strong> {generatedPlan.leg3.duration_minutes != null ? `${generatedPlan.leg3.duration_minutes} min` : "-"}</p>
+              <p>
+                <strong>Route:</strong>{" "}
+                {generatedPlan.leg3.google_maps_url ? (
+                  <a href={generatedPlan.leg3.google_maps_url} target="_blank" rel="noreferrer">
+                    Open in Google Maps
+                  </a>
+                ) : "-"}
+              </p>
+            </div>
+          )}
+
+          {generatedPlan.leg4 && (
+            <div style={{ marginTop: 20 }}>
+              <h3>After return flight: go home</h3>
+              <p><strong>Mode:</strong> {generatedPlan.leg4.mode}</p>
+              <p><strong>From:</strong> {generatedPlan.leg4.start_address}</p>
+              <p><strong>To:</strong> {generatedPlan.leg4.destination}</p>
+              <p><strong>Earliest start after landing:</strong> {generatedPlan.leg4.start_after_buffer_at || "-"}</p>
+              <p><strong>Duration:</strong> {generatedPlan.leg4.duration_minutes != null ? `${generatedPlan.leg4.duration_minutes} min` : "-"}</p>
+              <p>
+                <strong>Route:</strong>{" "}
+                {generatedPlan.leg4.google_maps_url ? (
+                  <a href={generatedPlan.leg4.google_maps_url} target="_blank" rel="noreferrer">
+                    Open in Google Maps
+                  </a>
+                ) : "-"}
+              </p>
             </div>
           )}
         </div>
