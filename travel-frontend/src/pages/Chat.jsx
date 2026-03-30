@@ -142,11 +142,25 @@ export default function Chat() {
    * User selects one specific flight offer.
    * Then we move to stay choice step.
    */
+  // function handleSelectOffer(offer, offerKey) {
+  //   setSelectedOffer(offer);
+  //   setSelectedOfferKey(offerKey);
+
+  //   // Reset downstream state every time user changes flight
+  //   setStayMode(null);
+  //   setHotelWidget(null);
+  //   setSelectedHotel(null);
+  //   setArrivalDestinationAddress("");
+  //   setGeneratedPlan(null);
+
+  //   setStep("stay-choice");
+  // }
   function handleSelectOffer(offer, offerKey) {
+    console.log("SELECT CLICKED", offerKey);
+    alert("Flight selected");
     setSelectedOffer(offer);
     setSelectedOfferKey(offerKey);
 
-    // Reset downstream state every time user changes flight
     setStayMode(null);
     setHotelWidget(null);
     setSelectedHotel(null);
@@ -392,6 +406,14 @@ export default function Chat() {
         <ChatTranscript text={out} />
 
         {/* Flight results */}
+        {selectedOffer && step === "stay-choice" && (
+          <StayChoice
+            hotelLoading={hotelLoading}
+            onChooseHotel={handleChooseHotel}
+            onUseCustomAddress={handleUseCustomAddress}
+          />
+        )}
+
         {flightWidget && (
           <FlightResults
             flightWidget={flightWidget}
