@@ -6,6 +6,7 @@ import requests
 AMADEUS_BASE_URL = "https://test.api.amadeus.com"
 
 
+
 def get_access_token():
     """
     Get OAuth token for Amadeus Self-Service APIs.
@@ -31,6 +32,52 @@ def get_access_token():
 
     return token_resp.json()["access_token"]
 
+def _amadeus_headers():
+    return {"Authorization": f"Bearer {get_access_token()}"}
+
+def search_hotels_by_city(city_code: str, radius: int = 20, radius_unit: str = "KM"):
+    base_url = "https://test.api.amadeus.com"
+    url = f"{base_url}/v1/reference-data/locations/hotels/by-city"
+
+    r = requests.get(
+        url,
+        headers=_amadeus_headers(),
+        params={
+            "cityCode": city_code,
+            "radius": radius,
+            "radiusUnit": radius_unit,
+            "hotelSource": "ALL",
+        },
+        timeout=30,
+    )
+    r.raise_for_status()
+    return r.json().get("data", [])
+
+
+def search_hotel_offers_by_hotel_id(
+    hotel_id: str,
+    adults: int,
+    check_in_date: str,
+    check_out_date: str,
+    room_quantity: int = 1,
+):
+    base_url = "https://test.api.amadeus.com"
+    url = f"{base_url}/v3/shopping/hotel-offers"
+
+    r = requests.get(
+        url,
+        headers=_amadeus_headers(),
+        params={
+            "hotelIds": hotel_id,
+            "adults": adults,
+            "checkInDate": check_in_date,
+            "checkOutDate": check_out_date,
+            "roomQuantity": room_quantity,
+        },
+        timeout=30,
+    )
+    r.raise_for_status()
+    return r.json().get("data", [])
 
 def search_locations(keyword: str, limit: int = 10):
     """
