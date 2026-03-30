@@ -564,3 +564,124 @@ class GenerateTripPlanView(APIView):
             "leg3": leg3,
             "leg4": leg4,
         })
+
+# chatbot/api_views.py
+class SearchHotelsView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        selected_offer = request.data.get("selected_offer")
+        destination_city = (request.data.get("destination_city") or "").strip()
+        adults = int(request.data.get("adults") or 1)
+        budget_remaining = request.data.get("budget_remaining")
+        max_results = int(request.data.get("max_results") or 8)
+
+        if not selected_offer or not destination_city:
+            return Response(
+                {"detail": "selected_offer and destination_city are required"},
+                status=400,
+            )
+
+        itineraries = selected_offer.get("itineraries") or []
+        if not itineraries:
+            return Response({"detail": "Selected offer has no itineraries."}, status=400)
+
+        # hotel check-in = final arrival of outbound
+        outbound_last_seg = itineraries[0]["segments"][-1]
+        check_in = outbound_last_seg["arrival"]["at"][:10]
+
+        # hotel check-out = first departure of return
+        if len(itineraries) > 1:
+            return_first_seg = itineraries[1]["segments"][0]
+            check_out = return_first_seg["departure"]["at"][:10]
+        else:
+            return Response(
+                {
+                    "detail": "One-way flight: ask for hotel checkout date or nights first.",
+                    "needs_hotel_checkout": True,
+                    "check_in": check_in,
+                },
+                status=400,
+            )
+
+        city_code = city_to_iata(destination_city)
+        if not city_code:
+            return Response(
+                {"detail": f"Could not resolve hotel city code for {destination_city}"},
+                status=400,
+            )
+
+        hotel_list = search_hotels_by_city(city_code, radius=20)
+        results = []
+
+        for hotel in hotel_list[:15]:
+            hotel_id = hotel.get("hotelId")
+            if not hotel_id:
+                continue
+
+            try:
+                offer_blocks = search_hotel_offers_by_hotel_id(
+                    hotel_id=hotel_id,
+                    adults=adults,
+                    check_in_date=check_in,
+                    check_out_date=check_out,
+                )
+            except requests.HTTPError:
+                continue
+
+            if not offer_blocks:
+                continue
+
+            first_block = offer_blocks[0]
+            offer = (first_block.get("offers") or [None])[0]
+            if not offer:
+                continue
+
+            try:
+                price_total = float((offer.get("price") or {}).get("total") or 0)
+            except Exception:
+                price_total = 0.0
+
+            address_obj = hotel.get("address") or {}
+            results.append(
+                {
+                    "hotel_id": hotel_id,
+                    "offer_id": offer.get("id"),
+                    "name": hotel.get("name"),
+                    "address": ", ".join(
+                        p for p in [
+                            hotel.get("name"),
+                            address_obj.get("cityName"),
+                            address_obj.get("countryCode"),
+                        ] if p
+                    ),
+                    "geo": hotel.get("geoCode") or {},
+                    "check_in": offer.get("checkInDate"),
+                    "check_out": offer.get("checkOutDate"),
+                    "price_total": price_total,
+                    "currency": (offer.get("price") or {}).get("currency"),
+                    "room_description": (
+                        ((offer.get("room") or {}).get("description") or {}).get("text")
+                        or ""
+                    ),
+                }
+            )
+
+        results.sort(key=lambda x: x["price_total"])
+
+        if budget_remaining is not None:
+            try:
+                budget_left = float(budget_remaining)
+                filtered = [h for h in results if h["price_total"] <= budget_left]
+                if filtered:
+                    results = filtered
+            except Exception:
+                pass
+
+        return Response(
+            {
+                "check_in": check_in,
+                "check_out": check_out,
+                "hotels": results[:max_results],
+            }
+        )
