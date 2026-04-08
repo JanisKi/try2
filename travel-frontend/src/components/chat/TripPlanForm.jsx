@@ -1,12 +1,10 @@
 import React from "react";
 
-/**
- * Controlled form for the routing part of the trip.
- * Parent page owns the state; this component only renders fields.
- */
 export default function TripPlanForm({
   flightWidget,
   selectedHotel,
+  selectedArrivalTransfer,
+  selectedReturnTransfer,
   startAddress,
   setStartAddress,
   arrivalDestinationAddress,
@@ -21,6 +19,8 @@ export default function TripPlanForm({
   setReturnHomeMode,
   planLoading,
   onGeneratePlan,
+  onSearchArrivalTransfer,
+  onSearchReturnTransfer,
 }) {
   return (
     <div
@@ -50,6 +50,65 @@ export default function TripPlanForm({
           <div>
             <strong>Hotel address:</strong> {selectedHotel.address || "-"}
           </div>
+          <div>
+            <strong>Hotel price:</strong> {selectedHotel.price_total ?? "-"}{" "}
+            {selectedHotel.currency || ""}
+            {selectedHotel.price_total_eur != null && (
+              <> (~{selectedHotel.price_total_eur} EUR)</>
+            )}
+          </div>
+        </div>
+      )}
+
+      {selectedArrivalTransfer && (
+        <div
+          style={{
+            marginBottom: "18px",
+            padding: "12px",
+            borderRadius: "10px",
+            background: "#182233",
+            border: "1px solid #34507d",
+          }}
+        >
+          <div>
+            <strong>Arrival transfer:</strong> {selectedArrivalTransfer.name || "-"}
+          </div>
+          <div>
+            <strong>Vehicle:</strong> {selectedArrivalTransfer.vehicle || "-"}
+          </div>
+          <div>
+            <strong>Price:</strong> {selectedArrivalTransfer.price_total ?? "-"}{" "}
+            {selectedArrivalTransfer.currency || ""}
+            {selectedArrivalTransfer.price_total_eur != null && (
+              <> (~{selectedArrivalTransfer.price_total_eur} EUR)</>
+            )}
+          </div>
+        </div>
+      )}
+
+      {selectedReturnTransfer && (
+        <div
+          style={{
+            marginBottom: "18px",
+            padding: "12px",
+            borderRadius: "10px",
+            background: "#182233",
+            border: "1px solid #34507d",
+          }}
+        >
+          <div>
+            <strong>Return transfer:</strong> {selectedReturnTransfer.name || "-"}
+          </div>
+          <div>
+            <strong>Vehicle:</strong> {selectedReturnTransfer.vehicle || "-"}
+          </div>
+          <div>
+            <strong>Price:</strong> {selectedReturnTransfer.price_total ?? "-"}{" "}
+            {selectedReturnTransfer.currency || ""}
+            {selectedReturnTransfer.price_total_eur != null && (
+              <> (~{selectedReturnTransfer.price_total_eur} EUR)</>
+            )}
+          </div>
         </div>
       )}
 
@@ -61,15 +120,7 @@ export default function TripPlanForm({
           value={startAddress}
           onChange={(e) => setStartAddress(e.target.value)}
           placeholder="Enter your home/start address"
-          style={{
-            width: "100%",
-            maxWidth: "650px",
-            padding: "12px",
-            borderRadius: "8px",
-            border: "1px solid #3a4250",
-            background: "#0f1115",
-            color: "white",
-          }}
+          style={inputStyleWide}
         />
       </div>
 
@@ -80,13 +131,7 @@ export default function TripPlanForm({
         <select
           value={toAirportMode}
           onChange={(e) => setToAirportMode(e.target.value)}
-          style={{
-            padding: "10px",
-            borderRadius: "8px",
-            border: "1px solid #3a4250",
-            background: "#0f1115",
-            color: "white",
-          }}
+          style={selectStyle}
         >
           <option value="drive">Drive / car</option>
           <option value="transit">Public transport</option>
@@ -102,15 +147,7 @@ export default function TripPlanForm({
             value={arrivalDestinationAddress}
             onChange={(e) => setArrivalDestinationAddress(e.target.value)}
             placeholder="Enter the address where you are going"
-            style={{
-              width: "100%",
-              maxWidth: "650px",
-              padding: "12px",
-              borderRadius: "8px",
-              border: "1px solid #3a4250",
-              background: "#0f1115",
-              color: "white",
-            }}
+            style={inputStyleWide}
           />
         </div>
       )}
@@ -124,18 +161,21 @@ export default function TripPlanForm({
         <select
           value={fromAirportMode}
           onChange={(e) => setFromAirportMode(e.target.value)}
-          style={{
-            padding: "10px",
-            borderRadius: "8px",
-            border: "1px solid #3a4250",
-            background: "#0f1115",
-            color: "white",
-          }}
+          style={selectStyle}
         >
           <option value="drive">Drive / car</option>
           <option value="transit">Public transport</option>
+          <option value="transfer">Airport transfer</option>
         </select>
       </div>
+
+      {fromAirportMode === "transfer" && (
+        <div style={{ marginBottom: "18px" }}>
+          <button onClick={onSearchArrivalTransfer} style={buttonStyle}>
+            {selectedArrivalTransfer ? "Change arrival transfer" : "Search arrival transfer"}
+          </button>
+        </div>
+      )}
 
       {flightWidget?.return_enabled && (
         <>
@@ -146,18 +186,21 @@ export default function TripPlanForm({
             <select
               value={returnToAirportMode}
               onChange={(e) => setReturnToAirportMode(e.target.value)}
-              style={{
-                padding: "10px",
-                borderRadius: "8px",
-                border: "1px solid #3a4250",
-                background: "#0f1115",
-                color: "white",
-              }}
+              style={selectStyle}
             >
               <option value="drive">Drive / car</option>
               <option value="transit">Public transport</option>
+              <option value="transfer">Airport transfer</option>
             </select>
           </div>
+
+          {returnToAirportMode === "transfer" && (
+            <div style={{ marginBottom: "18px" }}>
+              <button onClick={onSearchReturnTransfer} style={buttonStyle}>
+                {selectedReturnTransfer ? "Change return transfer" : "Search return transfer"}
+              </button>
+            </div>
+          )}
 
           <div style={{ marginBottom: "18px" }}>
             <label style={{ display: "block", marginBottom: "8px", fontWeight: "bold" }}>
@@ -166,13 +209,7 @@ export default function TripPlanForm({
             <select
               value={returnHomeMode}
               onChange={(e) => setReturnHomeMode(e.target.value)}
-              style={{
-                padding: "10px",
-                borderRadius: "8px",
-                border: "1px solid #3a4250",
-                background: "#0f1115",
-                color: "white",
-              }}
+              style={selectStyle}
             >
               <option value="drive">Drive / car</option>
               <option value="transit">Public transport</option>
@@ -185,14 +222,9 @@ export default function TripPlanForm({
         onClick={onGeneratePlan}
         disabled={planLoading}
         style={{
-          padding: "12px 18px",
-          borderRadius: "8px",
-          border: "none",
-          background: "#2d6cdf",
-          color: "white",
-          cursor: planLoading ? "not-allowed" : "pointer",
-          fontWeight: "bold",
+          ...buttonStyle,
           opacity: planLoading ? 0.7 : 1,
+          cursor: planLoading ? "not-allowed" : "pointer",
         }}
       >
         {planLoading ? "Generating plan..." : "Generate trip plan"}
@@ -200,3 +232,30 @@ export default function TripPlanForm({
     </div>
   );
 }
+
+const inputStyleWide = {
+  width: "100%",
+  maxWidth: "650px",
+  padding: "12px",
+  borderRadius: "8px",
+  border: "1px solid #3a4250",
+  background: "#0f1115",
+  color: "white",
+};
+
+const selectStyle = {
+  padding: "10px",
+  borderRadius: "8px",
+  border: "1px solid #3a4250",
+  background: "#0f1115",
+  color: "white",
+};
+
+const buttonStyle = {
+  padding: "12px 18px",
+  borderRadius: "8px",
+  border: "none",
+  background: "#2d6cdf",
+  color: "white",
+  fontWeight: "bold",
+};

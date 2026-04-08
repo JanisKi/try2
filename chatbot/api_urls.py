@@ -2,7 +2,12 @@
 
 from django.urls import path
 
-from .api_views import ChatSendView, GenerateTripPlanView, SearchHotelsView
+from .api_views import (
+    ChatSendView,
+    GenerateTripPlanView,
+    SearchHotelsView,
+    SearchTransfersView,
+)
 
 urlpatterns = [
     # Existing chat message endpoint

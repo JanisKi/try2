@@ -1,91 +1,23 @@
 import React from "react";
 
-/**
- * Show transfer offers for:
- * - arrival airport -> destination
- * - destination -> return airport
- */
 export default function TransferResults({
-  arrivalTransferWidget,
-  returnTransferWidget,
-  selectedArrivalTransfer,
-  selectedReturnTransfer,
-  onSelectArrivalTransfer,
-  onSelectReturnTransfer,
-  onContinue,
   transferLoading,
+  transferWidget,
+  transferSearchTarget,
+  onSelectTransfer,
+  onBackToRouteDetails,
 }) {
-  const arrivalOffers = Array.isArray(arrivalTransferWidget?.offers)
-    ? arrivalTransferWidget.offers
+  const transfers = Array.isArray(transferWidget?.transfers)
+    ? transferWidget.transfers
     : [];
-
-  const returnOffers = Array.isArray(returnTransferWidget?.offers)
-    ? returnTransferWidget.offers
-    : [];
-
-  function renderOfferCard(offer, selected, onSelect) {
-    return (
-      <div
-        key={offer.id}
-        style={{
-          marginBottom: "16px",
-          padding: "18px",
-          borderRadius: "14px",
-          background: selected ? "#182233" : "#12151b",
-          border: selected ? "1px solid #4c8dff" : "1px solid #2a2f3a",
-        }}
-      >
-        <h3 style={{ marginTop: 0, marginBottom: "10px" }}>
-          {offer.price_total} {offer.currency}
-        </h3>
-
-        <div style={{ marginBottom: "6px" }}>
-          <strong>Approx. EUR:</strong> {offer.price_total_eur} EUR
-        </div>
-
-        <div style={{ marginBottom: "6px" }}>
-          <strong>Type:</strong> {offer.transfer_type || "-"}
-        </div>
-
-        <div style={{ marginBottom: "6px" }}>
-          <strong>Provider:</strong> {offer.provider_name || "-"}
-        </div>
-
-        <div style={{ marginBottom: "6px" }}>
-          <strong>Vehicle:</strong> {offer.vehicle_description || "-"}
-        </div>
-
-        <div style={{ marginBottom: "6px" }}>
-          <strong>Seats:</strong> {offer.seats ?? "-"} | <strong>Bags:</strong> {offer.bags ?? "-"}
-        </div>
-
-        {offer.is_estimated ? (
-          <div style={{ marginBottom: "10px", opacity: 0.85 }}>
-            Estimated price
-          </div>
-        ) : null}
-
-        <button
-          onClick={() => onSelect(offer)}
-          style={{
-            padding: "10px 16px",
-            borderRadius: "8px",
-            border: "none",
-            background: selected ? "#2e8b57" : "#2d6cdf",
-            color: "white",
-            cursor: "pointer",
-            fontWeight: "bold",
-          }}
-        >
-          {selected ? "Selected" : "Select transfer"}
-        </button>
-      </div>
-    );
-  }
 
   return (
     <div style={{ marginTop: "28px" }}>
-      <h2 style={{ marginBottom: "16px" }}>Transfer options</h2>
+      <h2 style={{ marginBottom: "12px" }}>
+        {transferSearchTarget === "return"
+          ? "Return airport transfers"
+          : "Arrival airport transfers"}
+      </h2>
 
       {transferLoading && (
         <div
@@ -94,79 +26,117 @@ export default function TransferResults({
             borderRadius: "12px",
             background: "#12151b",
             border: "1px solid #2a2f3a",
-            marginBottom: "16px",
           }}
         >
           Searching transfers...
         </div>
       )}
 
-      {arrivalTransferWidget && (
-        <div style={{ marginBottom: "28px" }}>
-          <h3>Arrival airport → destination</h3>
-          {arrivalOffers.length === 0 ? (
+      {!transferLoading && (
+        <>
+          <div
+            style={{
+              marginBottom: "16px",
+              padding: "14px",
+              borderRadius: "12px",
+              background: "#12151b",
+              border: "1px solid #2a2f3a",
+            }}
+          >
+            <div>
+              <strong>Pickup:</strong> {transferWidget?.pickup_address || "-"}
+            </div>
+            <div>
+              <strong>Dropoff:</strong> {transferWidget?.dropoff_address || "-"}
+            </div>
+            <div>
+              <strong>Pickup time:</strong> {transferWidget?.pickup_at || "-"}
+            </div>
+          </div>
+
+          {transfers.length === 0 && (
             <div
               style={{
                 padding: "16px",
                 borderRadius: "12px",
                 background: "#12151b",
                 border: "1px solid #2a2f3a",
+                marginBottom: "16px",
               }}
             >
-              No arrival transfer offers found.
+              No transfer results found.
             </div>
-          ) : (
-            arrivalOffers.map((offer) =>
-              renderOfferCard(
-                offer,
-                selectedArrivalTransfer?.id === offer.id,
-                onSelectArrivalTransfer
-              )
-            )
           )}
-        </div>
-      )}
 
-      {returnTransferWidget && (
-        <div style={{ marginBottom: "28px" }}>
-          <h3>Destination → return airport</h3>
-          {returnOffers.length === 0 ? (
+          {transfers.map((transfer) => (
             <div
+              key={transfer.id}
               style={{
-                padding: "16px",
-                borderRadius: "12px",
+                marginBottom: "16px",
+                padding: "18px",
+                borderRadius: "14px",
                 background: "#12151b",
                 border: "1px solid #2a2f3a",
               }}
             >
-              No return transfer offers found.
-            </div>
-          ) : (
-            returnOffers.map((offer) =>
-              renderOfferCard(
-                offer,
-                selectedReturnTransfer?.id === offer.id,
-                onSelectReturnTransfer
-              )
-            )
-          )}
-        </div>
-      )}
+              <h3 style={{ marginTop: 0, marginBottom: "8px" }}>
+                {transfer.name || "Transfer option"}
+              </h3>
 
-      <button
-        onClick={onContinue}
-        style={{
-          padding: "12px 18px",
-          borderRadius: "8px",
-          border: "none",
-          background: "#2d6cdf",
-          color: "white",
-          cursor: "pointer",
-          fontWeight: "bold",
-        }}
-      >
-        Continue
-      </button>
+              <div style={{ marginBottom: "8px" }}>
+                <strong>Vehicle:</strong> {transfer.vehicle || "-"}
+              </div>
+
+              <div style={{ marginBottom: "8px" }}>
+                <strong>Passengers:</strong> {transfer.passengers ?? "-"}
+              </div>
+
+              <div style={{ marginBottom: "8px" }}>
+                <strong>Bags:</strong> {transfer.bags ?? "-"}
+              </div>
+
+              <div style={{ marginBottom: "8px" }}>
+                <strong>Total price:</strong> {transfer.price_total ?? "-"}{" "}
+                {transfer.currency || ""}
+              </div>
+
+              <div style={{ marginBottom: "12px" }}>
+                <strong>Approx. EUR:</strong> {transfer.price_total_eur ?? "-"} EUR
+              </div>
+
+              <button
+                onClick={() => onSelectTransfer(transfer)}
+                style={{
+                  padding: "10px 16px",
+                  borderRadius: "8px",
+                  border: "none",
+                  background: "#2d6cdf",
+                  color: "white",
+                  cursor: "pointer",
+                  fontWeight: "bold",
+                }}
+              >
+                Select transfer
+              </button>
+            </div>
+          ))}
+
+          <button
+            onClick={onBackToRouteDetails}
+            style={{
+              padding: "12px 18px",
+              borderRadius: "8px",
+              border: "1px solid #3a4250",
+              background: "#1b212c",
+              color: "white",
+              cursor: "pointer",
+              fontWeight: "bold",
+            }}
+          >
+            Back
+          </button>
+        </>
+      )}
     </div>
   );
 }

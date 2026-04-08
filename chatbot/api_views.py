@@ -860,57 +860,123 @@ class SearchTransfersView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request):
-        start_location_code = (request.data.get("start_location_code") or "").strip()
+        selected_offer = request.data.get("selected_offer")
+        direction = (request.data.get("direction") or "").strip()  # "arrival" | "return"
         destination_address = (request.data.get("destination_address") or "").strip()
-        start_date_time = (request.data.get("start_date_time") or "").strip()
-        passengers = int(request.data.get("passengers") or 1)
-        transfer_type = (request.data.get("transfer_type") or "PRIVATE").strip().upper()
+        adults = int(request.data.get("adults") or 1)
         budget_remaining = request.data.get("budget_remaining")
-        max_results = int(request.data.get("max_results") or 8)
 
-        if not start_location_code or not destination_address or not start_date_time:
-            return Response(
-                {"detail": "start_location_code, destination_address and start_date_time are required"},
-                status=400,
-            )
+        if not selected_offer:
+            return Response({"detail": "selected_offer is required"}, status=400)
 
-        dest_coords = geocode_address(destination_address)
-        if not dest_coords:
-            return Response(
-                {"detail": f"Could not geocode destination address: {destination_address}"},
-                status=400,
-            )
+        if direction not in ["arrival", "return"]:
+            return Response({"detail": "direction must be 'arrival' or 'return'."}, status=400)
 
-        end_geo_code = f"{dest_coords['lat']},{dest_coords['lon']}"
+        if not destination_address:
+            return Response({"detail": "destination_address is required."}, status=400)
+
+        itineraries = selected_offer.get("itineraries") or []
+        if not itineraries:
+            return Response({"detail": "Selected offer has no itineraries."}, status=400)
 
         try:
-            offers = search_transfer_offers(
-                start_location_code=start_location_code,
-                end_address_line=destination_address,
-                end_geo_code=end_geo_code,
-                start_date_time=start_date_time,
-                passengers=passengers,
-                transfer_type=transfer_type,
-            )
-        except requests.HTTPError as e:
-            return Response(
-                {"detail": f"Transfer search failed: {str(e)}"},
-                status=400,
-            )
+            outbound_last_seg = itineraries[0]["segments"][-1]
+            arrival_iata = outbound_last_seg["arrival"]["iataCode"]
+            arrival_at = outbound_last_seg["arrival"]["at"]
+
+            return_first_seg = None
+            if len(itineraries) > 1:
+                return_first_seg = itineraries[1]["segments"][0]
+
+            if direction == "arrival":
+                airport = get_airport_route_target(arrival_iata)
+                pickup_address = airport["route_address"]
+                pickup_dt = datetime.fromisoformat(arrival_at) + timedelta(
+                    minutes=ARRIVAL_AIRPORT_BUFFER_MINUTES
+                )
+                dropoff_address = destination_address
+                title = "Arrival airport transfer"
+            else:
+                if not return_first_seg:
+                    return Response(
+                        {"detail": "No return itinerary available for return transfer."},
+                        status=400,
+                    )
+
+                return_departure_iata = return_first_seg["departure"]["iataCode"]
+                return_departure_at = return_first_seg["departure"]["at"]
+
+                airport = get_airport_route_target(return_departure_iata)
+                pickup_address = destination_address
+                pickup_dt = datetime.fromisoformat(return_departure_at) - timedelta(
+                    minutes=DEPARTURE_AIRPORT_BUFFER_MINUTES
+                )
+                dropoff_address = airport["route_address"]
+                title = "Return airport transfer"
         except Exception as e:
-            return Response(
-                {"detail": f"Transfer search failed: {str(e)}"},
-                status=400,
+            return Response({"detail": f"Could not parse selected offer: {str(e)}"}, status=400)
+
+        # Mock transfer options for now.
+        # Later replace this section with real Amadeus Transfer Search API integration.
+        base_options = [
+            {
+                "id": f"{direction}-economy-sedan",
+                "name": "Economy Sedan",
+                "vehicle": "Sedan",
+                "passengers": min(max(adults, 1), 3),
+                "bags": 2,
+                "currency": "EUR",
+                "price_total": 42.0 if direction == "arrival" else 39.0,
+            },
+            {
+                "id": f"{direction}-standard-van",
+                "name": "Standard Van",
+                "vehicle": "Van",
+                "passengers": min(max(adults, 1), 6),
+                "bags": 5,
+                "currency": "EUR",
+                "price_total": 68.0 if direction == "arrival" else 64.0,
+            },
+            {
+                "id": f"{direction}-premium-executive",
+                "name": "Premium Executive",
+                "vehicle": "Executive",
+                "passengers": min(max(adults, 1), 3),
+                "bags": 3,
+                "currency": "GBP",
+                "price_total": 74.0 if direction == "arrival" else 70.0,
+            },
+        ]
+
+        results = []
+        for item in base_options:
+            price_total_eur = round(
+                convert_to_eur(float(item["price_total"]), item["currency"]),
+                2,
             )
 
-        results = [format_transfer_result(offer) for offer in offers]
+            results.append(
+                {
+                    "id": item["id"],
+                    "name": item["name"],
+                    "vehicle": item["vehicle"],
+                    "passengers": item["passengers"],
+                    "bags": item["bags"],
+                    "currency": item["currency"],
+                    "price_total": item["price_total"],
+                    "price_total_eur": price_total_eur,
+                    "pickup_address": pickup_address,
+                    "dropoff_address": dropoff_address,
+                    "pickup_at": pickup_dt.strftime("%Y-%m-%d %H:%M"),
+                }
+            )
 
         results.sort(key=lambda x: x["price_total_eur"])
 
         if budget_remaining is not None:
             try:
                 budget_left = float(budget_remaining)
-                filtered = [r for r in results if r["price_total_eur"] <= budget_left]
+                filtered = [t for t in results if t["price_total_eur"] <= budget_left]
                 if filtered:
                     results = filtered
             except Exception:
@@ -918,10 +984,11 @@ class SearchTransfersView(APIView):
 
         return Response(
             {
-                "transfer_type": transfer_type,
-                "start_location_code": start_location_code,
-                "destination_address": destination_address,
-                "start_date_time": start_date_time,
-                "offers": results[:max_results],
+                "title": title,
+                "direction": direction,
+                "pickup_address": pickup_address,
+                "dropoff_address": dropoff_address,
+                "pickup_at": pickup_dt.strftime("%Y-%m-%d %H:%M"),
+                "transfers": results,
             }
         )
