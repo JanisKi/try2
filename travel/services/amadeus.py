@@ -173,3 +173,41 @@ def search_hotel_offers_by_hotel_id(
     )
     r.raise_for_status()
     return r.json().get("data", [])
+
+def search_transfer_offers(
+    start_location_code: str,
+    end_address_line: str,
+    end_geo_code: str,
+    start_date_time: str,
+    passengers: int = 1,
+    transfer_type: str = "PRIVATE",
+):
+    """
+    Search Amadeus transfer offers.
+
+    Docs:
+    POST /v1/shopping/transfer-offers
+    """
+    base_url = "https://test.api.amadeus.com"
+    url = f"{base_url}/v1/shopping/transfer-offers"
+
+    payload = {
+        "startLocationCode": start_location_code,
+        "endAddressLine": end_address_line,
+        "endGeoCode": end_geo_code,   # "lat,lon"
+        "startDateTime": start_date_time,
+        "passengers": int(passengers or 1),
+        "transferType": transfer_type or "PRIVATE",
+    }
+
+    r = requests.post(
+        url,
+        headers={
+            "Authorization": f"Bearer {get_access_token()}",
+            "Content-Type": "application/json",
+        },
+        json=payload,
+        timeout=30,
+    )
+    r.raise_for_status()
+    return r.json().get("data", [])

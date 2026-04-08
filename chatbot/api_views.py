@@ -17,6 +17,7 @@ from travel.services.amadeus import (
     pick_first_airport_iata,
     search_hotels_by_city,
     search_hotel_offers_by_hotel_id,
+    search_transfer_offers,
 )
 from travel.services.openrouteservice import geocode_address, route_driving
 from travel.services.google_routes import compute_transit_route, summarize_transit_route
@@ -49,6 +50,80 @@ def convert_to_eur(amount: float, currency: str) -> float:
 
     return amount * rate
 
+def format_transfer_result(offer: dict) -> dict:
+    """
+    Convert Amadeus transfer offer into a smaller frontend-friendly object.
+    """
+    quotation = offer.get("quotation") or {}
+    amount_raw = quotation.get("monetaryAmount") or "0"
+    currency = quotation.get("currencyCode") or "EUR"
+
+    try:
+        amount = float(amount_raw)
+    except Exception:
+        amount = 0.0
+
+    vehicle = offer.get("vehicle") or {}
+    provider = offer.get("serviceProvider") or {}
+    end_obj = offer.get("end") or {}
+    end_address = end_obj.get("address") or {}
+
+    return {
+        "id": offer.get("id"),
+        "transfer_type": offer.get("transferType"),
+        "provider_name": provider.get("name") or provider.get("code") or "Unknown provider",
+        "provider_code": provider.get("code"),
+        "vehicle_description": vehicle.get("description") or "Transfer vehicle",
+        "vehicle_code": vehicle.get("code"),
+        "image_url": vehicle.get("imageURL"),
+        "seats": ((vehicle.get("seats") or [{}])[0]).get("count"),
+        "bags": ((vehicle.get("baggages") or [{}])[0]).get("count"),
+        "price_total": amount,
+        "currency": currency,
+        "price_total_eur": round(convert_to_eur(amount, currency), 2),
+        "is_estimated": bool(quotation.get("isEstimated")),
+        "start": offer.get("start") or {},
+        "end_name": end_obj.get("name"),
+        "end_address_line": end_address.get("line"),
+        "end_city_name": end_address.get("cityName"),
+    }
+
+
+def build_transfer_leg_from_selection(transfer: dict, start_address: str, destination_address: str):
+    """
+    Build a route-like leg object from a selected transfer.
+    This keeps frontend rendering consistent with your existing plan structure.
+    """
+    provider_name = transfer.get("provider_name") or "Transfer provider"
+    vehicle_description = transfer.get("vehicle_description") or "Transfer vehicle"
+    transfer_type = transfer.get("transfer_type") or "PRIVATE"
+    price_total = transfer.get("price_total")
+    currency = transfer.get("currency") or "EUR"
+    price_total_eur = transfer.get("price_total_eur")
+
+    summary = f"{provider_name} | {vehicle_description} | {transfer_type}"
+    if price_total is not None:
+        summary += f" | {price_total} {currency}"
+    if price_total_eur is not None:
+        summary += f" (~{price_total_eur} EUR)"
+
+    return {
+        "mode": "transfer",
+        "start_address": start_address,
+        "destination": destination_address,
+        "duration_minutes": None,
+        "distance_meters": None,
+        "leave_at": None,
+        "start_after_buffer_at": None,
+        "google_maps_url": None,
+        "steps": [],
+        "summary": summary,
+        "provider_name": provider_name,
+        "vehicle_description": vehicle_description,
+        "price_total": price_total,
+        "currency": currency,
+        "price_total_eur": price_total_eur,
+    }
 
 def build_preview(amadeus_json: dict, limit: int = 8):
     """
@@ -381,6 +456,10 @@ class GenerateTripPlanView(APIView):
 
         budget = request.data.get("budget")
 
+        selected_hotel = request.data.get("selected_hotel") or None
+        selected_arrival_transfer = request.data.get("selected_arrival_transfer") or None
+        selected_return_transfer = request.data.get("selected_return_transfer") or None
+
         start_address = (request.data.get("start_address") or "").strip()
         to_airport_mode = (request.data.get("to_airport_mode") or "drive").strip()
 
@@ -496,6 +575,18 @@ class GenerateTripPlanView(APIView):
                         reference_dt=final_arrival_dt,
                         subtract_airport_buffer=False,
                     )
+                elif from_airport_mode == "transfer":
+                    if not selected_arrival_transfer:
+                        return Response({"detail": "Please select an arrival transfer first."}, status=400)
+
+                    leg2 = build_transfer_leg_from_selection(
+                        transfer=selected_arrival_transfer,
+                        start_address=arrival_airport["route_address"],
+                        destination_address=arrival_destination_address,
+                    )
+                    leg2["start_after_buffer_at"] = (
+                        final_arrival_dt + timedelta(minutes=ARRIVAL_AIRPORT_BUFFER_MINUTES)
+                    ).strftime("%Y-%m-%d %H:%M")
                 else:
                     return Response({"detail": "Invalid from_airport_mode."}, status=400)
             except Exception as e:
@@ -524,6 +615,18 @@ class GenerateTripPlanView(APIView):
                         reference_dt=return_departure_dt,
                         subtract_airport_buffer=True,
                     )
+                elif return_to_airport_mode == "transfer":
+                    if not selected_return_transfer:
+                        return Response({"detail": "Please select a return transfer first."}, status=400)
+
+                    leg3 = build_transfer_leg_from_selection(
+                        transfer=selected_return_transfer,
+                        start_address=arrival_destination_address,
+                        destination_address=return_departure_airport["route_address"],
+                    )
+                    leg3["leave_at"] = (
+                        return_departure_dt - timedelta(minutes=DEPARTURE_AIRPORT_BUFFER_MINUTES)
+                    ).strftime("%Y-%m-%d %H:%M")
                 else:
                     return Response({"detail": "Invalid return_to_airport_mode."}, status=400)
             except Exception as e:
@@ -558,9 +661,37 @@ class GenerateTripPlanView(APIView):
                 return Response({"detail": f"Route from return airport to home failed: {str(e)}"}, status=400)
 
         remaining_budget = None
+        hotel_price_eur = 0.0
+        arrival_transfer_price_eur = 0.0
+        return_transfer_price_eur = 0.0
+
+        try:
+            if selected_hotel:
+                hotel_price_eur = float(selected_hotel.get("price_total_eur") or 0)
+        except Exception:
+            hotel_price_eur = 0.0
+
+        try:
+            if selected_arrival_transfer:
+                arrival_transfer_price_eur = float(selected_arrival_transfer.get("price_total_eur") or 0)
+        except Exception:
+            arrival_transfer_price_eur = 0.0
+
+        try:
+            if selected_return_transfer:
+                return_transfer_price_eur = float(selected_return_transfer.get("price_total_eur") or 0)
+        except Exception:
+            return_transfer_price_eur = 0.0
+
         try:
             if budget is not None:
-                remaining_budget = float(budget) - price_total
+                remaining_budget = (
+                    float(budget)
+                    - price_total
+                    - hotel_price_eur
+                    - arrival_transfer_price_eur
+                    - return_transfer_price_eur
+                )
         except Exception:
             remaining_budget = None
 
@@ -582,6 +713,12 @@ class GenerateTripPlanView(APIView):
             "arrival_at": arrival_at,
             "return_departure_at": return_departure_at,
             "return_arrival_at": return_arrival_at,
+            "selected_hotel": selected_hotel,
+            "selected_arrival_transfer": selected_arrival_transfer,
+            "selected_return_transfer": selected_return_transfer,
+            "selected_hotel_price_eur": hotel_price_eur,
+            "selected_arrival_transfer_price_eur": arrival_transfer_price_eur,
+            "selected_return_transfer_price_eur": return_transfer_price_eur,
             "leg1": leg1,
             "leg2": leg2,
             "leg3": leg3,
@@ -716,5 +853,75 @@ class SearchHotelsView(APIView):
                 "check_in": check_in,
                 "check_out": check_out,
                 "hotels": results[:max_results],
+            }
+        )
+
+class SearchTransfersView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        start_location_code = (request.data.get("start_location_code") or "").strip()
+        destination_address = (request.data.get("destination_address") or "").strip()
+        start_date_time = (request.data.get("start_date_time") or "").strip()
+        passengers = int(request.data.get("passengers") or 1)
+        transfer_type = (request.data.get("transfer_type") or "PRIVATE").strip().upper()
+        budget_remaining = request.data.get("budget_remaining")
+        max_results = int(request.data.get("max_results") or 8)
+
+        if not start_location_code or not destination_address or not start_date_time:
+            return Response(
+                {"detail": "start_location_code, destination_address and start_date_time are required"},
+                status=400,
+            )
+
+        dest_coords = geocode_address(destination_address)
+        if not dest_coords:
+            return Response(
+                {"detail": f"Could not geocode destination address: {destination_address}"},
+                status=400,
+            )
+
+        end_geo_code = f"{dest_coords['lat']},{dest_coords['lon']}"
+
+        try:
+            offers = search_transfer_offers(
+                start_location_code=start_location_code,
+                end_address_line=destination_address,
+                end_geo_code=end_geo_code,
+                start_date_time=start_date_time,
+                passengers=passengers,
+                transfer_type=transfer_type,
+            )
+        except requests.HTTPError as e:
+            return Response(
+                {"detail": f"Transfer search failed: {str(e)}"},
+                status=400,
+            )
+        except Exception as e:
+            return Response(
+                {"detail": f"Transfer search failed: {str(e)}"},
+                status=400,
+            )
+
+        results = [format_transfer_result(offer) for offer in offers]
+
+        results.sort(key=lambda x: x["price_total_eur"])
+
+        if budget_remaining is not None:
+            try:
+                budget_left = float(budget_remaining)
+                filtered = [r for r in results if r["price_total_eur"] <= budget_left]
+                if filtered:
+                    results = filtered
+            except Exception:
+                pass
+
+        return Response(
+            {
+                "transfer_type": transfer_type,
+                "start_location_code": start_location_code,
+                "destination_address": destination_address,
+                "start_date_time": start_date_time,
+                "offers": results[:max_results],
             }
         )

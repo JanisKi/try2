@@ -10,7 +10,7 @@ urlpatterns = [
 
     path("search-hotels/", SearchHotelsView.as_view()),
 
-    # NEW:
+    path("search-transfers/", SearchTransfersView.as_view()),
     # Called after user selects one flight and clicks "Generate plan"
     path("generate-trip-plan/", GenerateTripPlanView.as_view(), name="generate_trip_plan"),
 ]

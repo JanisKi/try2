@@ -1,9 +1,5 @@
 import React from "react";
 
-/**
- * Build a stable key for each flight offer.
- * We avoid using only array index because selection should stay stable.
- */
 function getOfferKey(offer, idx) {
   const firstSeg = offer?.itineraries?.[0]?.segments?.[0];
   const lastItinerary = offer?.itineraries?.[offer?.itineraries?.length - 1];
@@ -17,22 +13,20 @@ function getOfferKey(offer, idx) {
   ].join("|");
 }
 
-/**
- * Small helper to make ISO datetimes easier to read.
- */
 function formatDateTime(value) {
   if (!value) return "-";
   return value.replace("T", " ");
 }
 
-/**
- * Show outbound / return flight offers and let the user select one.
- */
 export default function FlightResults({
   flightWidget,
+  searchForm,
+  setSearchForm,
   selectedOfferKey,
   remainingBudget,
+  selectedHotel,
   onSelectOffer,
+  onSearchAgain,
 }) {
   const offers = Array.isArray(flightWidget?.offers) ? flightWidget.offers : [];
 
@@ -44,8 +38,150 @@ export default function FlightResults({
         style={{
           display: "flex",
           flexWrap: "wrap",
-          gap: "12px 24px",
+          gap: "12px 16px",
           marginBottom: "20px",
+          padding: "14px",
+          borderRadius: "12px",
+          background: "#12151b",
+          border: "1px solid #2a2f3a",
+          alignItems: "end",
+        }}
+      >
+        <div>
+          <label style={{ display: "block", marginBottom: 6, fontWeight: "bold" }}>
+            From
+          </label>
+          <input
+            value={searchForm.origin}
+            onChange={(e) =>
+              setSearchForm((prev) => ({ ...prev, origin: e.target.value }))
+            }
+            style={inputStyle}
+          />
+        </div>
+
+        <div>
+          <label style={{ display: "block", marginBottom: 6, fontWeight: "bold" }}>
+            To
+          </label>
+          <input
+            value={searchForm.destination}
+            onChange={(e) =>
+              setSearchForm((prev) => ({ ...prev, destination: e.target.value }))
+            }
+            style={inputStyle}
+          />
+        </div>
+
+        <div>
+          <label style={{ display: "block", marginBottom: 6, fontWeight: "bold" }}>
+            Departure
+          </label>
+          <input
+            type="date"
+            value={searchForm.departure_date}
+            onChange={(e) =>
+              setSearchForm((prev) => ({ ...prev, departure_date: e.target.value }))
+            }
+            style={inputStyle}
+          />
+        </div>
+
+        <div>
+          <label style={{ display: "block", marginBottom: 6, fontWeight: "bold" }}>
+            Adults
+          </label>
+          <input
+            type="number"
+            min="1"
+            value={searchForm.adults}
+            onChange={(e) =>
+              setSearchForm((prev) => ({ ...prev, adults: e.target.value }))
+            }
+            style={{ ...inputStyle, width: 90 }}
+          />
+        </div>
+
+        <div>
+          <label style={{ display: "block", marginBottom: 6, fontWeight: "bold" }}>
+            Stops
+          </label>
+          <select
+            value={searchForm.max_stops === 0 ? "0" : ""}
+            onChange={(e) =>
+              setSearchForm((prev) => ({
+                ...prev,
+                max_stops: e.target.value === "0" ? 0 : "",
+              }))
+            }
+            style={inputStyle}
+          >
+            <option value="">Any</option>
+            <option value="0">Direct only</option>
+          </select>
+        </div>
+
+        <div>
+          <label style={{ display: "block", marginBottom: 6, fontWeight: "bold" }}>
+            Budget (EUR)
+          </label>
+          <input
+            type="number"
+            min="0"
+            value={searchForm.budget}
+            onChange={(e) =>
+              setSearchForm((prev) => ({ ...prev, budget: e.target.value }))
+            }
+            style={{ ...inputStyle, width: 120 }}
+          />
+        </div>
+
+        <div>
+          <label style={{ display: "block", marginBottom: 6, fontWeight: "bold" }}>
+            Return flight
+          </label>
+          <input
+            type="checkbox"
+            checked={!!searchForm.return_enabled}
+            onChange={(e) =>
+              setSearchForm((prev) => ({
+                ...prev,
+                return_enabled: e.target.checked,
+                return_date: e.target.checked ? prev.return_date : "",
+              }))
+            }
+          />
+        </div>
+
+        {searchForm.return_enabled && (
+          <div>
+            <label style={{ display: "block", marginBottom: 6, fontWeight: "bold" }}>
+              Return
+            </label>
+            <input
+              type="date"
+              value={searchForm.return_date}
+              onChange={(e) =>
+                setSearchForm((prev) => ({ ...prev, return_date: e.target.value }))
+              }
+              style={inputStyle}
+            />
+          </div>
+        )}
+
+        <div>
+          <button onClick={onSearchAgain} style={buttonStyle}>
+            Search
+          </button>
+        </div>
+      </div>
+
+      <div
+        style={{
+          display: "flex",
+          flexWrap: "wrap",
+          gap: "18px",
+          marginBottom: "14px",
           padding: "14px",
           borderRadius: "12px",
           background: "#12151b",
@@ -53,46 +189,26 @@ export default function FlightResults({
         }}
       >
         <div>
-          <strong>From:</strong> {flightWidget?.origin_iata || flightWidget?.origin_city || "-"}
+          <strong>Current route:</strong>{" "}
+          {flightWidget?.origin_iata || flightWidget?.origin_city || "-"} →{" "}
+          {flightWidget?.destination_iata || flightWidget?.destination_city || "-"}
         </div>
         <div>
-          <strong>To:</strong> {flightWidget?.destination_iata || flightWidget?.destination_city || "-"}
-        </div>
-        <div>
-          <strong>Departure:</strong> {flightWidget?.departure_date || "-"}
-        </div>
-        <div>
-          <strong>Adults:</strong> {flightWidget?.adults || 1}
-        </div>
-        <div>
-          <strong>Budget:</strong> {flightWidget?.budget ?? "-"} EUR
-        </div>
-
-        {flightWidget?.return_enabled && (
-          <div>
-            <strong>Return:</strong> {flightWidget?.return_date || "-"}
-          </div>
-        )}
-
-        <div>
-          <strong>Remaining budget:</strong>{" "}
+          <strong>Flight budget left:</strong>{" "}
           {Number.isFinite(remainingBudget) ? remainingBudget.toFixed(2) : "-"} EUR
         </div>
+        {selectedHotel && (
+          <div>
+            <strong>Selected hotel:</strong> {selectedHotel.name} (
+            {selectedHotel.price_total} {selectedHotel.currency})
+          </div>
+        )}
       </div>
 
       <h3 style={{ marginBottom: "16px" }}>Results (cheapest first)</h3>
 
       {offers.length === 0 && (
-        <div
-          style={{
-            padding: "16px",
-            borderRadius: "12px",
-            background: "#12151b",
-            border: "1px solid #2a2f3a",
-          }}
-        >
-          No flight offers returned by backend.
-        </div>
+        <div style={emptyBoxStyle}>No flight offers returned by backend.</div>
       )}
 
       {offers.map((offer, idx) => {
@@ -114,6 +230,7 @@ export default function FlightResults({
             }}
           >
             <button
+              type="button"
               onClick={() => onSelectOffer(offer, offerKey)}
               style={{
                 position: "absolute",
@@ -173,3 +290,28 @@ export default function FlightResults({
     </div>
   );
 }
+
+const inputStyle = {
+  padding: "10px",
+  borderRadius: "8px",
+  border: "1px solid #3a4250",
+  background: "#0f1115",
+  color: "white",
+};
+
+const buttonStyle = {
+  padding: "10px 16px",
+  borderRadius: "8px",
+  border: "none",
+  background: "#2d6cdf",
+  color: "white",
+  cursor: "pointer",
+  fontWeight: "bold",
+};
+
+const emptyBoxStyle = {
+  padding: "16px",
+  borderRadius: "12px",
+  background: "#12151b",
+  border: "1px solid #2a2f3a",
+};
