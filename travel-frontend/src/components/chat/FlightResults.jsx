@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useState } from "react";
 
 function getOfferKey(offer, idx) {
   const firstSeg = offer?.itineraries?.[0]?.segments?.[0];
@@ -29,11 +29,18 @@ export default function FlightResults({
   onSearchAgain,
 }) {
   const offers = Array.isArray(flightWidget?.offers) ? flightWidget.offers : [];
+  const [showAllFlights, setShowAllFlights] = useState(false);
+
+  const selectedOffer =
+    offers.find((offer, idx) => getOfferKey(offer, idx) === selectedOfferKey) || null;
+
+  const shouldShowOffers = !selectedOffer || showAllFlights;
 
   return (
     <div style={{ marginTop: "28px" }}>
       <h2 style={{ marginBottom: "16px" }}>Flight search widget</h2>
 
+      {/* Search controls stay visible */}
       <div
         style={{
           display: "flex",
@@ -170,12 +177,16 @@ export default function FlightResults({
         )}
 
         <div>
-          <button onClick={onSearchAgain} style={buttonStyle}>
+          <button
+            onClick={onSearchAgain}
+            style={buttonStyle}
+          >
             Search
           </button>
         </div>
       </div>
 
+      {/* Summary panel */}
       <div
         style={{
           display: "flex",
@@ -186,6 +197,7 @@ export default function FlightResults({
           borderRadius: "12px",
           background: "#12151b",
           border: "1px solid #2a2f3a",
+          alignItems: "center",
         }}
       >
         <div>
@@ -193,100 +205,172 @@ export default function FlightResults({
           {flightWidget?.origin_iata || flightWidget?.origin_city || "-"} →{" "}
           {flightWidget?.destination_iata || flightWidget?.destination_city || "-"}
         </div>
+
         <div>
-          <strong>Flight budget left:</strong>{" "}
+          <strong>Remaining budget:</strong>{" "}
           {Number.isFinite(remainingBudget) ? remainingBudget.toFixed(2) : "-"} EUR
         </div>
+
         {selectedHotel && (
           <div>
-            <strong>Selected hotel:</strong> {selectedHotel.name} (
-            {selectedHotel.price_total} {selectedHotel.currency})
+            <strong>Selected hotel:</strong> {selectedHotel.name}
+          </div>
+        )}
+
+        {selectedOffer && (
+          <div style={{ marginLeft: "auto", display: "flex", gap: "10px" }}>
+            <button
+              onClick={() => setShowAllFlights((prev) => !prev)}
+              style={{
+                ...secondaryButtonStyle,
+              }}
+            >
+              {showAllFlights ? "Hide other flights" : "Change flight"}
+            </button>
           </div>
         )}
       </div>
 
-      <h3 style={{ marginBottom: "16px" }}>Results (cheapest first)</h3>
+      {/* Selected flight only */}
+      {selectedOffer && !showAllFlights && (
+        <div
+          style={{
+            marginBottom: "16px",
+            padding: "18px",
+            borderRadius: "14px",
+            background: "#182233",
+            border: "1px solid #4c8dff",
+          }}
+        >
+          <h3 style={{ marginTop: 0, marginBottom: "10px" }}>
+            Selected flight — {selectedOffer?.price?.total || "-"} EUR
+          </h3>
 
-      {offers.length === 0 && (
-        <div style={emptyBoxStyle}>No flight offers returned by backend.</div>
+          {selectedOffer.itineraries?.map((itinerary, itinIdx) => {
+            const segments = Array.isArray(itinerary?.segments) ? itinerary.segments : [];
+            const stops = Math.max(segments.length - 1, 0);
+
+            return (
+              <div key={itinIdx} style={{ marginBottom: "14px" }}>
+                <div style={{ fontWeight: "bold", marginBottom: "6px" }}>
+                  {itinIdx === 0 ? "Outbound" : "Return"}
+                </div>
+
+                <div style={{ marginBottom: "6px" }}>
+                  <strong>Duration:</strong> {itinerary?.duration || "-"}
+                </div>
+
+                <div style={{ marginBottom: "6px" }}>
+                  <strong>Stops:</strong> {stops}
+                </div>
+
+                <ul style={{ marginTop: 0 }}>
+                  {segments.map((seg, segIdx) => (
+                    <li key={segIdx} style={{ marginBottom: "6px" }}>
+                      {seg?.departure?.iataCode} ({formatDateTime(seg?.departure?.at)}) →{" "}
+                      {seg?.arrival?.iataCode} ({formatDateTime(seg?.arrival?.at)}) | Carrier:{" "}
+                      {seg?.carrierCode || "-"} | Flight: {seg?.number || "-"}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            );
+          })}
+        </div>
       )}
 
-      {offers.map((offer, idx) => {
-        const offerKey = getOfferKey(offer, idx);
-        const isSelected = selectedOfferKey === offerKey;
-        const itineraries = Array.isArray(offer?.itineraries) ? offer.itineraries : [];
-        const total = offer?.price?.total || "-";
+      {/* All flight offers only when needed */}
+      {shouldShowOffers && (
+        <>
+          <h3 style={{ marginBottom: "16px" }}>
+            {selectedOffer ? "Choose another flight" : "Results (cheapest first)"}
+          </h3>
 
-        return (
-          <div
-            key={offerKey}
-            style={{
-              position: "relative",
-              marginBottom: "16px",
-              padding: "18px",
-              borderRadius: "14px",
-              background: isSelected ? "#182233" : "#12151b",
-              border: isSelected ? "1px solid #4c8dff" : "1px solid #2a2f3a",
-            }}
-          >
-            <button
-              type="button"
-              onClick={() => onSelectOffer(offer, offerKey)}
-              style={{
-                position: "absolute",
-                top: "16px",
-                right: "16px",
-                padding: "10px 16px",
-                borderRadius: "8px",
-                border: "none",
-                background: isSelected ? "#2e8b57" : "#2d6cdf",
-                color: "white",
-                cursor: "pointer",
-                fontWeight: "bold",
-              }}
-            >
-              {isSelected ? "Selected" : "Select"}
-            </button>
+          {offers.length === 0 && (
+            <div style={emptyBoxStyle}>No flight offers returned by backend.</div>
+          )}
 
-            <h3 style={{ marginTop: 0, marginBottom: "10px" }}>{total} EUR</h3>
+          {offers.map((offer, idx) => {
+            const offerKey = getOfferKey(offer, idx);
+            const isSelected = selectedOfferKey === offerKey;
+            const itineraries = Array.isArray(offer?.itineraries) ? offer.itineraries : [];
+            const total = offer?.price?.total || "-";
 
-            {itineraries.map((itinerary, itinIdx) => {
-              const segments = Array.isArray(itinerary?.segments) ? itinerary.segments : [];
-              const stops = Math.max(segments.length - 1, 0);
+            return (
+              <div
+                key={offerKey}
+                style={{
+                  position: "relative",
+                  marginBottom: "16px",
+                  padding: "18px",
+                  borderRadius: "14px",
+                  background: isSelected ? "#182233" : "#12151b",
+                  border: isSelected ? "1px solid #4c8dff" : "1px solid #2a2f3a",
+                }}
+              >
+                <button
+                  type="button"
+                  onClick={() => {
+                    onSelectOffer(offer, offerKey);
+                    setShowAllFlights(false);
+                  }}
+                  style={{
+                    position: "absolute",
+                    top: "16px",
+                    right: "16px",
+                    padding: "10px 16px",
+                    borderRadius: "8px",
+                    border: "none",
+                    background: isSelected ? "#2e8b57" : "#2d6cdf",
+                    color: "white",
+                    cursor: "pointer",
+                    fontWeight: "bold",
+                  }}
+                >
+                  {isSelected ? "Selected" : "Select"}
+                </button>
 
-              return (
-                <div key={itinIdx} style={{ marginBottom: "14px" }}>
-                  <div style={{ fontWeight: "bold", marginBottom: "6px" }}>
-                    {itinIdx === 0 ? "Outbound" : "Return"}
-                  </div>
+                <h3 style={{ marginTop: 0, marginBottom: "10px" }}>{total} EUR</h3>
 
-                  <div style={{ marginBottom: "6px" }}>
-                    <strong>Duration:</strong> {itinerary?.duration || "-"}
-                  </div>
+                {itineraries.map((itinerary, itinIdx) => {
+                  const segments = Array.isArray(itinerary?.segments) ? itinerary.segments : [];
+                  const stops = Math.max(segments.length - 1, 0);
 
-                  <div style={{ marginBottom: "6px" }}>
-                    <strong>Stops:</strong> {stops}
-                  </div>
+                  return (
+                    <div key={itinIdx} style={{ marginBottom: "14px" }}>
+                      <div style={{ fontWeight: "bold", marginBottom: "6px" }}>
+                        {itinIdx === 0 ? "Outbound" : "Return"}
+                      </div>
 
-                  <div style={{ marginBottom: "6px" }}>
-                    <strong>Segments:</strong>
-                  </div>
+                      <div style={{ marginBottom: "6px" }}>
+                        <strong>Duration:</strong> {itinerary?.duration || "-"}
+                      </div>
 
-                  <ul style={{ marginTop: 0 }}>
-                    {segments.map((seg, segIdx) => (
-                      <li key={segIdx} style={{ marginBottom: "6px" }}>
-                        {seg?.departure?.iataCode} ({formatDateTime(seg?.departure?.at)}) →{" "}
-                        {seg?.arrival?.iataCode} ({formatDateTime(seg?.arrival?.at)}) | Carrier:{" "}
-                        {seg?.carrierCode || "-"} | Flight: {seg?.number || "-"}
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              );
-            })}
-          </div>
-        );
-      })}
+                      <div style={{ marginBottom: "6px" }}>
+                        <strong>Stops:</strong> {stops}
+                      </div>
+
+                      <div style={{ marginBottom: "6px" }}>
+                        <strong>Segments:</strong>
+                      </div>
+
+                      <ul style={{ marginTop: 0 }}>
+                        {segments.map((seg, segIdx) => (
+                          <li key={segIdx} style={{ marginBottom: "6px" }}>
+                            {seg?.departure?.iataCode} ({formatDateTime(seg?.departure?.at)}) →{" "}
+                            {seg?.arrival?.iataCode} ({formatDateTime(seg?.arrival?.at)}) | Carrier:{" "}
+                            {seg?.carrierCode || "-"} | Flight: {seg?.number || "-"}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  );
+                })}
+              </div>
+            );
+          })}
+        </>
+      )}
     </div>
   );
 }
@@ -304,6 +388,16 @@ const buttonStyle = {
   borderRadius: "8px",
   border: "none",
   background: "#2d6cdf",
+  color: "white",
+  cursor: "pointer",
+  fontWeight: "bold",
+};
+
+const secondaryButtonStyle = {
+  padding: "10px 16px",
+  borderRadius: "8px",
+  border: "1px solid #3a4250",
+  background: "#1b212c",
   color: "white",
   cursor: "pointer",
   fontWeight: "bold",
