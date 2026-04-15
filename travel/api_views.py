@@ -2,7 +2,7 @@ from rest_framework.views import APIView  # DRF base view
 from rest_framework.response import Response  # JSON response
 from rest_framework import permissions  # Auth rules
 from chatbot.models import TravelIntent
-from .services.amadeus import search_flights  # Amadeus call
+from .services.amadeus import search_flights, AmadeusProviderError, AmadeusClientError
 from .services.iata import city_to_iata  # City -> IATA mapping
 from .models import CityIata  # City -> IATA DB table
 
@@ -120,13 +120,25 @@ class SearchFromLatestIntentView(APIView):
             return_date = None  # <-- NEW
 
         # Call Amadeus with optional return_date
-        data = search_flights(
-            origin_iata,
-            dest_iata,
-            departure_date,
-            adults=adults,
-            return_date=return_date,  # <-- NEW
-        )
+        try:
+            data = search_flights(
+                origin_iata,
+                dest_iata,
+                departure_date,
+                adults=adults,
+                return_date=return_date,
+            )
+        except AmadeusProviderError as e:
+            return Response(
+                {"detail": f"Amadeus search is temporarily unavailable (provider error {e.status_code}). Please try again in a moment."},
+                status=503,
+            )
+        except AmadeusClientError as e:
+            return Response(
+                {"detail": f"No flights found for that route/date (Amadeus {e.status_code})."},
+                status=400,
+            )
+
         return Response({
             "intent": {
                 "origin_city": intent.origin,
@@ -183,13 +195,24 @@ class FlightSearchView(APIView):
             return_date = None
 
         # Call Amadeus (return_date None means one-way)
-        amadeus_json = search_flights(
-            origin=origin_iata,
-            destination=dest_iata,
-            departure_date=departure_date,
-            adults=adults,
-            return_date=return_date,
-        )
+        try:
+            amadeus_json = search_flights(
+                origin=origin_iata,
+                destination=dest_iata,
+                departure_date=departure_date,
+                adults=adults,
+                return_date=return_date,
+            )
+        except AmadeusProviderError as e:
+            return Response(
+                {"detail": f"Amadeus search is temporarily unavailable (provider error {e.status_code}). Please try again in a moment."},
+                status=503,
+            )
+        except AmadeusClientError as e:
+            return Response(
+                {"detail": f"No flights found for that route/date (Amadeus {e.status_code})."},
+                status=400,
+            )
 
         # Return Amadeus JSON directly (contains "data")
         return Response(amadeus_json)

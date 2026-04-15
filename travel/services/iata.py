@@ -47,7 +47,11 @@ def city_to_iata(name: str, auto_fetch: bool = True) -> str | None:
         return None
 
     # 3) Ask Amadeus locations API
-    locations = search_locations(city, limit=5)
+    try:
+        locations = search_locations(city, limit=5)
+    except Exception:
+        # Amadeus unavailable — return None rather than propagating a 500
+        return None
 
     code = pick_best_iata(locations)
     if not code:

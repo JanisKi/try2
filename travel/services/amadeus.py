@@ -6,6 +6,22 @@ import requests
 AMADEUS_BASE_URL = "https://test.api.amadeus.com"
 
 
+class AmadeusProviderError(Exception):
+    """Raised when Amadeus returns 5xx — their upstream fault, not ours."""
+    def __init__(self, status_code, body):
+        self.status_code = status_code
+        self.body = body
+        super().__init__(f"Amadeus provider error {status_code}: {body}")
+
+
+class AmadeusClientError(Exception):
+    """Raised when Amadeus returns 4xx — bad request / no results for that route."""
+    def __init__(self, status_code, body):
+        self.status_code = status_code
+        self.body = body
+        super().__init__(f"Amadeus client error {status_code}: {body}")
+
+
 def get_access_token():
     """
     Get OAuth token for Amadeus Self-Service APIs.
@@ -120,10 +136,9 @@ def search_flights(
         except Exception:
             error_body = offers_resp.text
 
-        raise requests.HTTPError(
-            f"Amadeus flight search failed: {offers_resp.status_code} {error_body}",
-            response=offers_resp,
-        )
+        if offers_resp.status_code >= 500:
+            raise AmadeusProviderError(offers_resp.status_code, error_body)
+        raise AmadeusClientError(offers_resp.status_code, error_body)
 
     return offers_resp.json()
 
@@ -209,5 +224,14 @@ def search_transfer_offers(
         json=payload,
         timeout=30,
     )
-    r.raise_for_status()
+
+    if not r.ok:
+        try:
+            error_body = r.json()
+        except Exception:
+            error_body = r.text
+        if r.status_code >= 500:
+            raise AmadeusProviderError(r.status_code, error_body)
+        raise AmadeusClientError(r.status_code, error_body)
+
     return r.json().get("data", [])

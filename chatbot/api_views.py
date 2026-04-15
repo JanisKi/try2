@@ -1,7 +1,10 @@
 # chatbot/api_views.py
 
 from datetime import datetime, timedelta, timezone
+import logging
 import requests
+
+logger = logging.getLogger(__name__)
 
 from rest_framework.views import APIView
 from rest_framework.response import Response
@@ -12,12 +15,11 @@ from .services import extract_flight_intent, openrouter_chat
 
 from travel.services.iata import city_to_iata
 from travel.services.amadeus import (
-    search_flights,
-    search_locations,
-    pick_first_airport_iata,
     search_hotels_by_city,
     search_hotel_offers_by_hotel_id,
     search_transfer_offers,
+    AmadeusProviderError,
+    AmadeusClientError,
 )
 from travel.services.openrouteservice import geocode_address, route_driving
 from travel.services.google_routes import compute_transit_route, summarize_transit_route
@@ -28,6 +30,133 @@ from travel.services.google_routes import compute_transit_route, summarize_trans
 # ---------------------------------------------------------
 DEPARTURE_AIRPORT_BUFFER_MINUTES = 90
 ARRIVAL_AIRPORT_BUFFER_MINUTES = 60
+
+def _amadeus_error_code(err) -> int | None:
+    """Extract the Amadeus error code integer from an AmadeusProviderError body."""
+    try:
+        body = err.body if isinstance(err.body, dict) else {}
+        for e in body.get("errors", []):
+            code = int(e.get("code", 0))
+            if code:
+                return code
+    except Exception:
+        pass
+    return None
+
+
+def _run_flight_search_with_retry(
+    origin_iata: str,
+    dest_iata: str,
+    dest_label: str,   # human-readable name for location lookup
+    departure_date: str,
+    adults: int,
+    return_date,
+):
+    """
+    Call search_flights, retry once with a concrete airport IATA when the first
+    attempt fails.  Returns (amadeus_json | None, used_dest_iata, error_answer | None).
+
+    error_answer is non-None only when we can confirm it is a genuine provider
+    outage rather than a test-env data gap (code 141).
+    """
+    from travel.services.amadeus import (
+        search_flights,
+        search_locations,
+        pick_first_airport_iata,
+        AmadeusProviderError,
+        AmadeusClientError,
+    )
+
+    try:
+        amadeus_json = search_flights(
+            origin=origin_iata,
+            destination=dest_iata,
+            departure_date=departure_date,
+            adults=adults,
+            return_date=return_date,
+        )
+        logger.info("Amadeus flight search OK: %s → %s on %s", origin_iata, dest_iata, departure_date)
+        return amadeus_json, dest_iata, None
+
+    except (AmadeusProviderError, AmadeusClientError, requests.HTTPError) as first_err:
+        first_code = _amadeus_error_code(first_err) if isinstance(first_err, AmadeusProviderError) else None
+        logger.warning(
+            "Amadeus first attempt failed (%s %s, code %s) for %s → %s on %s — body: %s",
+            type(first_err).__name__,
+            getattr(first_err, "status_code", "?"),
+            first_code,
+            origin_iata,
+            dest_iata,
+            departure_date,
+            getattr(first_err, "body", ""),
+        )
+
+        # Always attempt a retry with a concrete airport code — Amadeus test env
+        # returns 5xx (code 141) for city codes like LON even when LHR works.
+        retry_dest_iata = None
+        location_api_down = False
+        try:
+            locations = search_locations(dest_label, limit=10)
+            retry_dest_iata = pick_first_airport_iata(locations)
+            logger.info("Location lookup for '%s' → airport IATA: %s", dest_label, retry_dest_iata)
+        except Exception as loc_err:
+            location_api_down = True
+            logger.warning("Location lookup also failed — Amadeus API may be fully down: %s", loc_err)
+
+        if retry_dest_iata and retry_dest_iata != dest_iata:
+            try:
+                amadeus_json = search_flights(
+                    origin=origin_iata,
+                    destination=retry_dest_iata,
+                    departure_date=departure_date,
+                    adults=adults,
+                    return_date=return_date,
+                )
+                logger.info("Amadeus retry OK: %s → %s", origin_iata, retry_dest_iata)
+                return amadeus_json, retry_dest_iata, None
+            except AmadeusProviderError as retry_err:
+                retry_code = _amadeus_error_code(retry_err)
+                logger.error(
+                    "Amadeus retry also failed (%s, code %s) for %s → %s — body: %s",
+                    retry_err.status_code,
+                    retry_code,
+                    origin_iata,
+                    retry_dest_iata,
+                    retry_err.body,
+                )
+                # code 141 = test-env "no data for this route" — treat as no results
+                if first_code == 141 and retry_code == 141:
+                    return None, retry_dest_iata, None
+                return None, retry_dest_iata, _provider_error_msg(first_code or retry_code, location_api_down)
+            except (AmadeusClientError, requests.HTTPError) as retry_err:
+                logger.warning("Amadeus retry 4xx for %s → %s: %s", origin_iata, retry_dest_iata, retry_err)
+                return None, retry_dest_iata, None
+
+        # No alternate IATA found (location API is also down, or no airport in results)
+        if isinstance(first_err, AmadeusProviderError):
+            if first_code == 141:
+                return None, dest_iata, None   # test-env no data → silent "no results"
+            return None, dest_iata, _provider_error_msg(first_code, location_api_down)
+        return None, dest_iata, None
+
+    except Exception as exc:
+        logger.exception("Unexpected flight search error")
+        raise exc
+
+
+def _provider_error_msg(error_code: int | None, api_fully_down: bool) -> str:
+    """Build a user-facing message that includes diagnostic detail."""
+    code_hint = f" (error code {error_code})" if error_code else ""
+    if api_fully_down:
+        return (
+            f"Amadeus search API is currently unreachable{code_hint}. "
+            "This may be a credentials issue or a temporary outage — "
+            "please check your AMADEUS_API_KEY / AMADEUS_API_SECRET and try again."
+        )
+    return (
+        f"Amadeus search returned a provider error{code_hint}. "
+        "Please try again in a moment, or try a different date."
+    )
 
 
 def convert_to_eur(amount: float, currency: str) -> float:
@@ -331,38 +460,19 @@ class ChatSendView(APIView):
                 dest_iata = intent["destination"].strip().upper()
 
             if intent.get("departure_date") and origin_iata and dest_iata:
-                amadeus_json = None
-
                 try:
-                    amadeus_json = search_flights(
-                        origin=origin_iata,
-                        destination=dest_iata,
+                    amadeus_json, dest_iata, error_answer = _run_flight_search_with_retry(
+                        origin_iata=origin_iata,
+                        dest_iata=dest_iata,
+                        dest_label=intent.get("destination") or dest_iata,
                         departure_date=str(intent["departure_date"]),
                         adults=int(intent.get("adults") or 1),
                         return_date=str(intent["return_date"]) if intent.get("return_date") else None,
                     )
-                except requests.HTTPError:
-                    retry_dest_iata = None
-
-                    try:
-                        locations = search_locations(intent.get("destination"), limit=10)
-                        retry_dest_iata = pick_first_airport_iata(locations)
-                    except Exception:
-                        retry_dest_iata = None
-
-                    if retry_dest_iata and retry_dest_iata != dest_iata:
-                        try:
-                            amadeus_json = search_flights(
-                                origin=origin_iata,
-                                destination=retry_dest_iata,
-                                departure_date=str(intent["departure_date"]),
-                                adults=int(intent.get("adults") or 1),
-                                return_date=str(intent["return_date"]) if intent.get("return_date") else None,
-                            )
-                            dest_iata = retry_dest_iata
-                        except requests.HTTPError:
-                            amadeus_json = None
+                    if error_answer:
+                        answer = error_answer
                 except Exception as e:
+                    amadeus_json = None
                     answer = f"Flight search failed: {str(e)}"
 
                 if amadeus_json:
@@ -725,6 +835,103 @@ class GenerateTripPlanView(APIView):
             "leg4": leg4,
         })
 
+class SearchFlightsStructuredView(APIView):
+    """
+    POST /api/chat/search-flights/
+
+    Structured flight search that bypasses NLP — the widget calls this directly
+    instead of building a natural-language prompt and round-tripping through
+    /chat/send/.
+
+    Body (all strings unless noted):
+      origin          – city name or IATA code (e.g. "Riga" or "RIX")
+      destination     – city name or IATA code
+      departure_date  – YYYY-MM-DD
+      return_date     – YYYY-MM-DD or "" / omitted for one-way
+      adults          – int (default 1)
+      budget          – float or null
+      max_stops       – int or null (0 = direct only)
+
+    Returns the same shape as ChatSendView:
+      { "flight_widget": {...} | null, "answer": str }
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        origin_in = (request.data.get("origin") or "").strip()
+        dest_in = (request.data.get("destination") or "").strip()
+        departure_date = (request.data.get("departure_date") or "").strip()
+        return_date = (request.data.get("return_date") or "").strip() or None
+        adults = max(1, int(request.data.get("adults") or 1))
+        budget = request.data.get("budget")
+        max_stops = request.data.get("max_stops")
+
+        if not origin_in or not dest_in or not departure_date:
+            return Response(
+                {"detail": "origin, destination, departure_date are required"},
+                status=400,
+            )
+
+        # Resolve city names → IATA (3-char inputs are treated as IATA directly)
+        origin_iata = city_to_iata(origin_in)
+        if not origin_iata and len(origin_in) == 3 and origin_in.isalpha():
+            origin_iata = origin_in.upper()
+
+        dest_iata = city_to_iata(dest_in)
+        if not dest_iata and len(dest_in) == 3 and dest_in.isalpha():
+            dest_iata = dest_in.upper()
+
+        if not origin_iata or not dest_iata:
+            return Response(
+                {"detail": f"Could not resolve '{origin_in}' or '{dest_in}' to IATA codes."},
+                status=400,
+            )
+
+        amadeus_json = None
+        answer = None
+
+        try:
+            amadeus_json, dest_iata, error_answer = _run_flight_search_with_retry(
+                origin_iata=origin_iata,
+                dest_iata=dest_iata,
+                dest_label=dest_in,
+                departure_date=departure_date,
+                adults=adults,
+                return_date=return_date,
+            )
+            if error_answer:
+                answer = error_answer
+        except Exception as e:
+            return Response({"detail": f"Flight search failed: {str(e)}"}, status=500)
+
+        if amadeus_json:
+            flight_widget = {
+                "origin_city": origin_in,
+                "destination_city": dest_in,
+                "origin_iata": origin_iata,
+                "destination_iata": dest_iata,
+                "departure_date": departure_date,
+                "return_date": return_date or "",
+                "return_enabled": bool(return_date),
+                "adults": adults,
+                "max_stops": max_stops,
+                "budget": budget,
+                "offers": build_preview(amadeus_json, limit=12),
+            }
+            answer = f"Found flights for {origin_iata} → {dest_iata} on {departure_date}"
+            if return_date:
+                answer += f", returning on {return_date}"
+            answer += f" for {adults} adult(s)."
+            return Response({"flight_widget": flight_widget, "answer": answer})
+
+        if answer is None:
+            answer = (
+                "Amadeus could not find flights for that route/date. "
+                "Please try a different date or destination."
+            )
+        return Response({"flight_widget": None, "answer": answer})
+
+
 # chatbot/api_views.py
 class SearchHotelsView(APIView):
     permission_classes = [permissions.IsAuthenticated]
@@ -916,60 +1123,99 @@ class SearchTransfersView(APIView):
         except Exception as e:
             return Response({"detail": f"Could not parse selected offer: {str(e)}"}, status=400)
 
-        # Mock transfer options for now.
-        # Later replace this section with real Amadeus Transfer Search API integration.
-        base_options = [
-            {
-                "id": f"{direction}-economy-sedan",
-                "name": "Economy Sedan",
-                "vehicle": "Sedan",
-                "passengers": min(max(adults, 1), 3),
-                "bags": 2,
-                "currency": "EUR",
-                "price_total": 42.0 if direction == "arrival" else 39.0,
-            },
-            {
-                "id": f"{direction}-standard-van",
-                "name": "Standard Van",
-                "vehicle": "Van",
-                "passengers": min(max(adults, 1), 6),
-                "bags": 5,
-                "currency": "EUR",
-                "price_total": 68.0 if direction == "arrival" else 64.0,
-            },
-            {
-                "id": f"{direction}-premium-executive",
-                "name": "Premium Executive",
-                "vehicle": "Executive",
-                "passengers": min(max(adults, 1), 3),
-                "bags": 3,
-                "currency": "GBP",
-                "price_total": 74.0 if direction == "arrival" else 70.0,
-            },
-        ]
+        # Try the real Amadeus Transfer Search API first (arrival direction only —
+        # Amadeus startLocationCode is an airport IATA code).
+        amadeus_transfers = []
+        amadeus_error = None
 
-        results = []
-        for item in base_options:
-            price_total_eur = round(
-                convert_to_eur(float(item["price_total"]), item["currency"]),
-                2,
-            )
+        if direction == "arrival":
+            try:
+                dest_geo = geocode_address(destination_address)
+                if dest_geo:
+                    geo_str = f"{dest_geo['lat']},{dest_geo['lon']}"
+                    raw_offers = search_transfer_offers(
+                        start_location_code=arrival_iata,
+                        end_address_line=destination_address,
+                        end_geo_code=geo_str,
+                        start_date_time=pickup_dt.strftime("%Y-%m-%dT%H:%M:%S"),
+                        passengers=adults,
+                    )
+                    for offer in raw_offers:
+                        fmt = format_transfer_result(offer)
+                        amadeus_transfers.append({
+                            "id": fmt["id"],
+                            "name": fmt["provider_name"] or fmt["vehicle_description"] or "Transfer",
+                            "vehicle": fmt["vehicle_description"] or fmt["vehicle_code"] or "Vehicle",
+                            "passengers": fmt["seats"],
+                            "bags": fmt["bags"],
+                            "currency": fmt["currency"],
+                            "price_total": fmt["price_total"],
+                            "price_total_eur": fmt["price_total_eur"],
+                            "pickup_address": pickup_address,
+                            "dropoff_address": dropoff_address,
+                            "pickup_at": pickup_dt.strftime("%Y-%m-%d %H:%M"),
+                        })
+            except AmadeusProviderError as e:
+                amadeus_error = f"Transfer provider temporarily unavailable: {e.status_code}"
+            except (AmadeusClientError, Exception):
+                # No results or unsupported route in test env — fall through to mock
+                pass
 
-            results.append(
+        if amadeus_transfers:
+            results = amadeus_transfers
+        else:
+            # Fallback: synthetic options so the flow always completes
+            base_options = [
                 {
-                    "id": item["id"],
-                    "name": item["name"],
-                    "vehicle": item["vehicle"],
-                    "passengers": item["passengers"],
-                    "bags": item["bags"],
-                    "currency": item["currency"],
-                    "price_total": item["price_total"],
-                    "price_total_eur": price_total_eur,
-                    "pickup_address": pickup_address,
-                    "dropoff_address": dropoff_address,
-                    "pickup_at": pickup_dt.strftime("%Y-%m-%d %H:%M"),
-                }
-            )
+                    "id": f"{direction}-economy-sedan",
+                    "name": "Economy Sedan",
+                    "vehicle": "Sedan",
+                    "passengers": min(max(adults, 1), 3),
+                    "bags": 2,
+                    "currency": "EUR",
+                    "price_total": 42.0 if direction == "arrival" else 39.0,
+                },
+                {
+                    "id": f"{direction}-standard-van",
+                    "name": "Standard Van",
+                    "vehicle": "Van",
+                    "passengers": min(max(adults, 1), 6),
+                    "bags": 5,
+                    "currency": "EUR",
+                    "price_total": 68.0 if direction == "arrival" else 64.0,
+                },
+                {
+                    "id": f"{direction}-premium-executive",
+                    "name": "Premium Executive",
+                    "vehicle": "Executive",
+                    "passengers": min(max(adults, 1), 3),
+                    "bags": 3,
+                    "currency": "GBP",
+                    "price_total": 74.0 if direction == "arrival" else 70.0,
+                },
+            ]
+
+            results = []
+            for item in base_options:
+                price_total_eur = round(
+                    convert_to_eur(float(item["price_total"]), item["currency"]),
+                    2,
+                )
+                results.append(
+                    {
+                        "id": item["id"],
+                        "name": item["name"],
+                        "vehicle": item["vehicle"],
+                        "passengers": item["passengers"],
+                        "bags": item["bags"],
+                        "currency": item["currency"],
+                        "price_total": item["price_total"],
+                        "price_total_eur": price_total_eur,
+                        "pickup_address": pickup_address,
+                        "dropoff_address": dropoff_address,
+                        "pickup_at": pickup_dt.strftime("%Y-%m-%d %H:%M"),
+                    }
+                )
 
         results.sort(key=lambda x: x["price_total_eur"])
 
@@ -990,5 +1236,7 @@ class SearchTransfersView(APIView):
                 "dropoff_address": dropoff_address,
                 "pickup_at": pickup_dt.strftime("%Y-%m-%d %H:%M"),
                 "transfers": results,
+                # None when live Amadeus data is used; error string when provider failed
+                "provider_warning": amadeus_error,
             }
         )

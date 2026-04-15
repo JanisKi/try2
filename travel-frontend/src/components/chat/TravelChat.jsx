@@ -10,41 +10,24 @@ import TripPlanForm from "./TripPlanForm";
 import GeneratedPlan from "./GeneratedPlan";
 
 /**
- * Build a natural-language prompt from structured widget fields.
- * We reuse your existing /chat/send/ backend endpoint for flight re-search.
+ * Build structured params from the search form for the /chat/search-flights/ endpoint.
  */
-function buildFlightPrompt(form) {
-  const origin = (form.origin || "").trim();
-  const destination = (form.destination || "").trim();
-  const departureDate = form.departure_date || "";
-  const returnDate = form.return_enabled ? form.return_date || "" : "";
-  const adults = Number(form.adults || 1);
-  const budget =
-    form.budget !== "" && form.budget !== null && form.budget !== undefined
-      ? String(form.budget).trim()
-      : "";
-
-  let prompt = `flight from ${origin} to ${destination}`;
-
-  if (departureDate) {
-    prompt += ` on ${departureDate}`;
-  }
-
-  if (returnDate) {
-    prompt += ` returning on ${returnDate}`;
-  }
-
-  prompt += ` for ${adults} adult${adults === 1 ? "" : "s"}`;
-
-  if (budget) {
-    prompt += `, budget ${budget} EUR`;
-  }
-
-  if (form.max_stops === 0 || form.max_stops === "0") {
-    prompt += `, direct flights only`;
-  }
-
-  return prompt;
+function buildFlightParams(form) {
+  return {
+    origin: (form.origin || "").trim(),
+    destination: (form.destination || "").trim(),
+    departure_date: form.departure_date || "",
+    return_date: form.return_enabled ? form.return_date || "" : "",
+    adults: Number(form.adults || 1),
+    budget:
+      form.budget !== "" && form.budget !== null && form.budget !== undefined
+        ? Number(form.budget) || null
+        : null,
+    max_stops:
+      form.max_stops !== "" && form.max_stops !== null
+        ? Number(form.max_stops)
+        : null,
+  };
 }
 
 /**
@@ -217,7 +200,8 @@ export default function TravelChat() {
   }
 
   /**
-   * Re-run flight search from widget controls.
+   * Re-run flight search from widget controls using the structured endpoint
+   * (no NLP round-trip — fields are passed directly).
    */
   async function handleSearchAgain() {
     if (!searchForm.origin || !searchForm.destination || !searchForm.departure_date) {
@@ -225,19 +209,25 @@ export default function TravelChat() {
       return;
     }
 
-    const builtPrompt = buildFlightPrompt(searchForm);
+    const params = buildFlightParams(searchForm);
 
     setFlightWidget(null);
     resetSelectionFlow();
-    appendTranscriptLine("YOU", builtPrompt);
+    appendTranscriptLine(
+      "SEARCH",
+      `${params.origin} → ${params.destination} on ${params.departure_date}` +
+        (params.return_date ? ` / return ${params.return_date}` : "") +
+        ` · ${params.adults} adult(s)`,
+    );
 
     try {
-      const r = await api.post("/chat/send/", { prompt: builtPrompt });
+      const r = await api.post("/chat/search-flights/", params);
       appendTranscriptLine("BOT", r.data?.answer || "Done.");
       applyFlightWidget(r.data?.flight_widget || null);
     } catch (err) {
       console.error(err);
-      appendTranscriptLine("BOT", "Error: request failed.");
+      const detail = err?.response?.data?.detail || "Flight search failed.";
+      appendTranscriptLine("BOT", `Error: ${detail}`);
     }
   }
 

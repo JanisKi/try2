@@ -54,6 +54,23 @@ export default function TransferResults({
             </div>
           </div>
 
+          {transferWidget?.provider_warning && (
+            <div
+              style={{
+                marginBottom: "16px",
+                padding: "12px 14px",
+                borderRadius: "10px",
+                background: "#1c1a0e",
+                border: "1px solid #5a4a10",
+                color: "#c8a84b",
+                fontSize: "14px",
+              }}
+            >
+              Live transfer search unavailable ({transferWidget.provider_warning}). Showing
+              estimated options — prices may differ at booking.
+            </div>
+          )}
+
           {transfers.length === 0 && (
             <div
               style={{
