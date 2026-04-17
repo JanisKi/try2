@@ -1,4 +1,6 @@
+// travel-frontend/src/components/chat/FlightResults.jsx
 import React, { useState } from "react";
+import MockDataBanner from "./MockDataBanner";
 
 function getOfferKey(offer, idx) {
   const firstSeg = offer?.itineraries?.[0]?.segments?.[0];
@@ -32,13 +34,24 @@ export default function FlightResults({
   const [showAllFlights, setShowAllFlights] = useState(false);
 
   const selectedOffer =
-    offers.find((offer, idx) => getOfferKey(offer, idx) === selectedOfferKey) || null;
+    offers.find((offer, idx) => getOfferKey(offer, idx) === selectedOfferKey) ||
+    null;
 
   const shouldShowOffers = !selectedOffer || showAllFlights;
+  
+  // Check if using mock data
+  const isMockData = flightWidget?._mock === true;
 
   return (
     <div style={{ marginTop: "28px" }}>
       <h2 style={{ marginBottom: "16px" }}>Flight search widget</h2>
+
+      {/* Mock data banner */}
+      {isMockData && (
+        <MockDataBanner 
+          message="Amadeus API is temporarily unavailable. Showing sample flight data for demonstration purposes. Prices and schedules are not real." 
+        />
+      )}
 
       {/* Search controls stay visible */}
       <div
@@ -177,10 +190,7 @@ export default function FlightResults({
         )}
 
         <div>
-          <button
-            onClick={onSearchAgain}
-            style={buttonStyle}
-          >
+          <button onClick={onSearchAgain} style={buttonStyle}>
             Search
           </button>
         </div>
@@ -244,10 +254,17 @@ export default function FlightResults({
         >
           <h3 style={{ marginTop: 0, marginBottom: "10px" }}>
             Selected flight — {selectedOffer?.price?.total || "-"} EUR
+            {isMockData && (
+              <span style={{ fontSize: "12px", color: "#f1c40f", marginLeft: "10px" }}>
+                (Sample data)
+              </span>
+            )}
           </h3>
 
           {selectedOffer.itineraries?.map((itinerary, itinIdx) => {
-            const segments = Array.isArray(itinerary?.segments) ? itinerary.segments : [];
+            const segments = Array.isArray(itinerary?.segments)
+              ? itinerary.segments
+              : [];
             const stops = Math.max(segments.length - 1, 0);
 
             return (
@@ -255,15 +272,12 @@ export default function FlightResults({
                 <div style={{ fontWeight: "bold", marginBottom: "6px" }}>
                   {itinIdx === 0 ? "Outbound" : "Return"}
                 </div>
-
                 <div style={{ marginBottom: "6px" }}>
                   <strong>Duration:</strong> {itinerary?.duration || "-"}
                 </div>
-
                 <div style={{ marginBottom: "6px" }}>
                   <strong>Stops:</strong> {stops}
                 </div>
-
                 <ul style={{ marginTop: 0 }}>
                   {segments.map((seg, segIdx) => (
                     <li key={segIdx} style={{ marginBottom: "6px" }}>
@@ -293,7 +307,9 @@ export default function FlightResults({
           {offers.map((offer, idx) => {
             const offerKey = getOfferKey(offer, idx);
             const isSelected = selectedOfferKey === offerKey;
-            const itineraries = Array.isArray(offer?.itineraries) ? offer.itineraries : [];
+            const itineraries = Array.isArray(offer?.itineraries)
+              ? offer.itineraries
+              : [];
             const total = offer?.price?.total || "-";
 
             return (
@@ -333,7 +349,9 @@ export default function FlightResults({
                 <h3 style={{ marginTop: 0, marginBottom: "10px" }}>{total} EUR</h3>
 
                 {itineraries.map((itinerary, itinIdx) => {
-                  const segments = Array.isArray(itinerary?.segments) ? itinerary.segments : [];
+                  const segments = Array.isArray(itinerary?.segments)
+                    ? itinerary.segments
+                    : [];
                   const stops = Math.max(segments.length - 1, 0);
 
                   return (
@@ -341,25 +359,21 @@ export default function FlightResults({
                       <div style={{ fontWeight: "bold", marginBottom: "6px" }}>
                         {itinIdx === 0 ? "Outbound" : "Return"}
                       </div>
-
                       <div style={{ marginBottom: "6px" }}>
                         <strong>Duration:</strong> {itinerary?.duration || "-"}
                       </div>
-
                       <div style={{ marginBottom: "6px" }}>
                         <strong>Stops:</strong> {stops}
                       </div>
-
                       <div style={{ marginBottom: "6px" }}>
                         <strong>Segments:</strong>
                       </div>
-
                       <ul style={{ marginTop: 0 }}>
                         {segments.map((seg, segIdx) => (
                           <li key={segIdx} style={{ marginBottom: "6px" }}>
                             {seg?.departure?.iataCode} ({formatDateTime(seg?.departure?.at)}) →{" "}
-                            {seg?.arrival?.iataCode} ({formatDateTime(seg?.arrival?.at)}) | Carrier:{" "}
-                            {seg?.carrierCode || "-"} | Flight: {seg?.number || "-"}
+                            {seg?.arrival?.iataCode} ({formatDateTime(seg?.arrival?.at)}) |
+                            Carrier: {seg?.carrierCode || "-"} | Flight: {seg?.number || "-"}
                           </li>
                         ))}
                       </ul>
