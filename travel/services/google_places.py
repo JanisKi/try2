@@ -67,7 +67,23 @@ def search_places_text(
     
     try:
         response = requests.post(url, headers=headers, json=payload, timeout=30)
-        response.raise_for_status()
+        try:
+            response.raise_for_status()
+        except requests.HTTPError as exc:
+            # Google usually returns a useful JSON error body.
+            # Logging it makes 403 errors much easier to understand.
+            try:
+                error_body = response.json()
+            except ValueError:
+                error_body = response.text
+
+            logger.error(
+                "Google Places text search failed: status=%s body=%s",
+                response.status_code,
+                error_body,
+            )
+
+            raise
         return response.json().get("places", [])
     except Exception as e:
         logger.error("Google Places text search failed: %s", e)

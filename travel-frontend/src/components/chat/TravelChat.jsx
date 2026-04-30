@@ -8,6 +8,7 @@ import HotelResults from "./HotelResults";
 import TransferResults from "./TransferResults";
 import TripPlanForm from "./TripPlanForm";
 import GeneratedPlan from "./GeneratedPlan";
+import TravelExtrasPanel from "./TravelExtrasPanel";
 
 /**
  * Build structured params from the search form for the /chat/search-flights/ endpoint.
@@ -672,6 +673,15 @@ export default function TravelChat() {
           onGeneratePlan={handleGeneratePlan}
           onSearchArrivalTransfer={handleSearchArrivalTransfer}
           onSearchReturnTransfer={handleSearchReturnTransfer}
+        />
+      )}
+
+      {/* Things to do / restaurants / tours / AI itinerary */}
+      {selectedOffer && step === "route-details" && arrivalDestinationAddress && (
+        <TravelExtrasPanel
+          flightWidget={flightWidget}
+          arrivalDestinationAddress={arrivalDestinationAddress}
+          remainingBudget={remainingBudget}
         />
       )}
 
