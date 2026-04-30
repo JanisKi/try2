@@ -9,7 +9,6 @@ import StayChoice from "./StayChoice";
 import HotelResults from "./HotelResults";
 import TransferResults from "./TransferResults";
 import TripPlanForm from "./TripPlanForm";
-import GeneratedPlan from "./GeneratedPlan";
 import TripItineraryBuilder from "./TripItineraryBuilder";
 
 /**
@@ -660,6 +659,7 @@ export default function TravelChat() {
           selectedArrivalTransfer={selectedArrivalTransfer}
           selectedReturnTransfer={selectedReturnTransfer}
           routePlan={generatedPlan}
+          startAddress={startAddress}
           arrivalDestinationAddress={arrivalDestinationAddress}
           remainingBudget={remainingBudget}
         />
