@@ -43,6 +43,8 @@ function toNumber(value, fallback = 0) {
 
 /**
  * Escape text before inserting it into printable HTML.
+ *
+ * This prevents names/addresses containing <, >, &, etc. from breaking the PDF page.
  */
 function escapeHtml(value) {
   const text = String(value ?? "");
@@ -101,9 +103,55 @@ function getItemName(item) {
 }
 
 /**
- * Get useful external link for a place/activity.
+ * Build Google Maps directions link.
  */
-function getItemLink(item) {
+function buildGoogleMapsDirectionsUrl(origin, destination) {
+  if (!origin || !destination) return "";
+
+  return `https://www.google.com/maps/dir/?api=1&origin=${encodeURIComponent(
+    origin,
+  )}&destination=${encodeURIComponent(destination)}`;
+}
+
+/**
+ * Build a Google Maps search link for a place/activity.
+ *
+ * This is the fallback when Google Places / Viator / AI data does not provide
+ * a direct link. It still lets the user open the place, see photos, reviews,
+ * ticket links, opening hours, etc.
+ */
+function buildGoogleMapsSearchUrl(query, city) {
+  const cleanQuery = [query, city].filter(Boolean).join(" ");
+
+  return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(
+    cleanQuery,
+  )}`;
+}
+
+/**
+ * Normalize text for fuzzy matching.
+ *
+ * Used to connect AI-generated itinerary items back to real Google Places /
+ * Viator provider results.
+ */
+function normalizeText(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/**
+ * Get useful external link for a place/activity.
+ *
+ * Priority:
+ * 1. Google Places link
+ * 2. Google website link
+ * 3. Viator booking link
+ * 4. Google Maps search fallback
+ */
+function getItemLink(item, destinationCity = "") {
   return (
     item?.google_maps_url ||
     item?.googleMapsUri ||
@@ -111,8 +159,98 @@ function getItemLink(item) {
     item?.booking_url ||
     item?.product_url ||
     item?.webURL ||
-    ""
+    buildGoogleMapsSearchUrl(getItemName(item), destinationCity)
   );
+}
+
+/**
+ * Find a provider item that looks like the same place/activity as an AI item.
+ *
+ * Example:
+ * AI returns: "London Eye"
+ * Google Places pool contains: "lastminute.com London Eye"
+ *
+ * We try to match them so the itinerary item can use the real Google Maps link,
+ * rating, address, reviews, and provider metadata.
+ */
+function findBestProviderMatch(activity, pools) {
+  const activityName = normalizeText(getItemName(activity));
+  const activityType = normalizeText(activity?.type);
+
+  if (!activityName) return null;
+
+  let candidates = [];
+
+  if (activityType.includes("restaurant")) {
+    candidates = pools.restaurants || [];
+  } else if (activityType.includes("tour")) {
+    candidates = pools.tours || [];
+  } else if (activityType.includes("attraction") || activityType.includes("activity")) {
+    candidates = pools.attractions || [];
+  } else {
+    candidates = [
+      ...(pools.attractions || []),
+      ...(pools.restaurants || []),
+      ...(pools.tours || []),
+    ];
+  }
+
+  return (
+    candidates.find((candidate) => {
+      const candidateName = normalizeText(getItemName(candidate));
+
+      return (
+        candidateName === activityName ||
+        candidateName.includes(activityName) ||
+        activityName.includes(candidateName)
+      );
+    }) || null
+  );
+}
+
+/**
+ * Merge AI item with provider result when possible.
+ *
+ * AI gives nice descriptions and timing.
+ * Provider result gives real links, ratings, addresses, reviews, and source.
+ */
+function enrichActivityWithProviderData(activity, pools) {
+  const providerMatch = findBestProviderMatch(activity, pools);
+
+  if (!providerMatch) {
+    return activity;
+  }
+
+  return {
+    ...providerMatch,
+
+    // Keep AI timing/type/description because it is usually better for itinerary UX.
+    time: activity.time || providerMatch.time,
+    type: activity.type || providerMatch.type,
+    name: activity.name || activity.title || getItemName(providerMatch),
+    title: activity.title || activity.name || getItemName(providerMatch),
+    description:
+      activity.description ||
+      activity.short_description ||
+      providerMatch.description ||
+      providerMatch.short_description,
+
+    // Mark that this item was enriched from provider data.
+    _matched_provider: true,
+  };
+}
+
+/**
+ * Get source label for the UI/PDF.
+ */
+function getItemSourceLabel(item) {
+  if (item?._matched_provider) return "Matched provider result";
+  if (item?.source === "google_places") return "Google Places";
+  if (item?.source === "viator") return "Viator";
+  if (item?.source === "viator_mock") return "Sample Viator data";
+  if (item?._mock) return "Sample/mock data";
+
+  return "Google Maps search";
 }
 
 /**
@@ -171,6 +309,7 @@ function looksFreeAttraction(item) {
  */
 function estimateItemPriceEur(item, type, adults = 1) {
   const adultCount = Math.max(1, Number(adults || 1));
+  const normalizedType = String(type || "").toLowerCase();
 
   const explicitPrice =
     item?.price_total_eur ??
@@ -182,49 +321,44 @@ function estimateItemPriceEur(item, type, adults = 1) {
     item?.pricing?.summary?.fromPrice;
 
   if (explicitPrice !== undefined && explicitPrice !== null && explicitPrice !== "") {
-    return Math.max(0, toNumber(explicitPrice) * (type === "tour" ? adultCount : 1));
+    return Math.max(
+      0,
+      toNumber(explicitPrice) * (normalizedType === "tour" ? adultCount : 1),
+    );
   }
 
-  if (type === "tour") {
+  if (normalizedType === "tour") {
     return 45 * adultCount;
   }
 
   const priceLevel = item?.priceLevel ?? item?.price_level;
 
-  if (type === "restaurant") {
+  if (normalizedType === "restaurant") {
     return estimateFromPriceLevel(priceLevel, "restaurant") * adultCount;
   }
 
-  if (type === "attraction") {
+  if (normalizedType === "attraction" || normalizedType === "activity") {
     if (looksFreeAttraction(item)) return 0;
     return estimateFromPriceLevel(priceLevel, "attraction") * adultCount;
   }
 
+  // Breaks/custom unknown items default to free/unknown.
   return 0;
-}
-
-/**
- * Build Google Maps directions link.
- */
-function buildGoogleMapsDirectionsUrl(origin, destination) {
-  if (!origin || !destination) return "";
-
-  return `https://www.google.com/maps/dir/?api=1&origin=${encodeURIComponent(
-    origin,
-  )}&destination=${encodeURIComponent(destination)}`;
 }
 
 /**
  * Create one normalized editable itinerary item.
  */
-function makeItem({ time, type, item, fallbackName, adults }) {
-  const estimatedPriceEur = estimateItemPriceEur(item, type, adults);
+function makeItem({ time, type, item, fallbackName, adults, destinationCity }) {
+  const normalizedType = String(type || "activity").toLowerCase();
+  const estimatedPriceEur = estimateItemPriceEur(item, normalizedType, adults);
+  const itemName = getItemName(item) || fallbackName;
 
   return {
     id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
     time,
-    type,
-    name: getItemName(item) || fallbackName,
+    type: normalizedType,
+    name: itemName,
     description:
       item?.description ||
       item?.short_description ||
@@ -239,7 +373,11 @@ function makeItem({ time, type, item, fallbackName, adults }) {
       item?.userRatingCount ||
       null,
     address: item?.address || item?.formattedAddress || "",
-    link: getItemLink(item),
+
+    // Always provide a link.
+    // If provider data has no link, this falls back to Google Maps search.
+    link: getItemLink(item || { name: itemName }, destinationCity),
+
     estimated_price_eur: estimatedPriceEur,
     price_note:
       item?.price_from || item?.price || item?.pricing
@@ -247,6 +385,8 @@ function makeItem({ time, type, item, fallbackName, adults }) {
         : estimatedPriceEur > 0
           ? "Estimated"
           : "Likely free / unknown",
+
+    source_label: getItemSourceLabel(item),
     raw: item || {},
   };
 }
@@ -254,7 +394,7 @@ function makeItem({ time, type, item, fallbackName, adults }) {
 /**
  * Build random editable days from available pools.
  */
-function buildRandomDays(dayCount, pools, adults = 1) {
+function buildRandomDays(dayCount, pools, adults = 1, destinationCity = "") {
   const safeDayCount = Math.max(1, Math.min(Number(dayCount || 3), 14));
 
   return Array.from({ length: safeDayCount }, (_, index) => {
@@ -283,6 +423,7 @@ function buildRandomDays(dayCount, pools, adults = 1) {
           item: morningAttraction,
           fallbackName: "Explore a nearby attraction",
           adults,
+          destinationCity,
         }),
         makeItem({
           time: "12:30",
@@ -290,6 +431,7 @@ function buildRandomDays(dayCount, pools, adults = 1) {
           item: lunchRestaurant,
           fallbackName: "Lunch stop",
           adults,
+          destinationCity,
         }),
         makeItem({
           time: "15:00",
@@ -297,6 +439,7 @@ function buildRandomDays(dayCount, pools, adults = 1) {
           item: afternoonChoice,
           fallbackName: "Afternoon activity",
           adults,
+          destinationCity,
         }),
         makeItem({
           time: "19:00",
@@ -304,6 +447,7 @@ function buildRandomDays(dayCount, pools, adults = 1) {
           item: dinnerRestaurant,
           fallbackName: "Dinner spot",
           adults,
+          destinationCity,
         }),
       ],
     };
@@ -312,8 +456,18 @@ function buildRandomDays(dayCount, pools, adults = 1) {
 
 /**
  * Convert backend AI itinerary into editable frontend days.
+ *
+ * Important:
+ * The AI often returns clean names/descriptions, but no links.
+ * So we enrich each AI activity by matching it back to Google Places / Viator pools.
  */
-function normalizeAiItinerary(aiResponse, fallbackDays, pools, adults = 1) {
+function normalizeAiItinerary(
+  aiResponse,
+  fallbackDays,
+  pools,
+  adults = 1,
+  destinationCity = "",
+) {
   const itinerary = aiResponse?.itinerary || aiResponse;
   const aiDays = Array.isArray(itinerary?.days) ? itinerary.days : [];
 
@@ -330,29 +484,34 @@ function normalizeAiItinerary(aiResponse, fallbackDays, pools, adults = 1) {
         dayNumber: day.day_number || day.day || index + 1,
         date: day.date || "",
         title: day.theme || day.title || `Day ${index + 1}`,
-        items: activities.map((activity) =>
-          makeItem({
-            time: activity.time || "",
-            type: activity.type || "activity",
-            item: activity,
-            fallbackName: activity.name || "Activity",
+        items: activities.map((activity) => {
+          const enrichedActivity = enrichActivityWithProviderData(activity, pools);
+
+          return makeItem({
+            time: activity.time || enrichedActivity.time || "",
+            type: activity.type || enrichedActivity.type || "activity",
+            item: enrichedActivity,
+            fallbackName: activity.name || activity.title || "Activity",
             adults,
-          }),
-        ),
+            destinationCity,
+          });
+        }),
       };
     });
   }
 
-  return buildRandomDays(fallbackDays, pools, adults);
+  return buildRandomDays(fallbackDays, pools, adults, destinationCity);
 }
 
 /**
  * Choose the correct replacement pool for an itinerary item.
  */
 function getPoolByType(type, pools) {
-  if (type === "restaurant") return pools.restaurants;
-  if (type === "tour") return pools.tours;
-  if (type === "attraction") return pools.attractions;
+  const normalizedType = String(type || "").toLowerCase();
+
+  if (normalizedType === "restaurant") return pools.restaurants;
+  if (normalizedType === "tour") return pools.tours;
+  if (normalizedType === "attraction") return pools.attractions;
 
   return [...pools.attractions, ...pools.tours, ...pools.restaurants];
 }
@@ -416,7 +575,7 @@ function isInternalStepPath(path) {
 /**
  * Extract clean transport legs from backend route plan.
  *
- * The old version walked too deeply and displayed internal Google step data.
+ * The previous version walked too deeply and displayed internal Google step data.
  * This version only keeps objects that have a clear origin/destination or explicit map link.
  */
 function extractRouteLegs(routePlan, startAddress, destinationAddress) {
@@ -446,13 +605,8 @@ function extractRouteLegs(routePlan, startAddress, destinationAddress) {
 
     const link = value.google_maps_url || value.maps_url || value.map_url || "";
 
-    const hasUsefulRoute =
-      (origin && destination) ||
-      link ||
-      value.duration_text ||
-      value.distance_text ||
-      value.duration ||
-      value.distance;
+    // Avoid internal step objects that only have duration/distance.
+    const hasUsefulRoute = (origin && destination) || link;
 
     if (!hasUsefulRoute) return;
 
@@ -529,6 +683,7 @@ function extractRouteLegs(routePlan, startAddress, destinationAddress) {
     if (!leg.origin && !leg.destination && !leg.link) return false;
 
     const key = `${leg.label}-${leg.origin}-${leg.destination}-${leg.duration}-${leg.distance}`;
+
     if (seen.has(key)) return false;
 
     seen.add(key);
@@ -554,7 +709,7 @@ function calculateItineraryEstimate(days) {
  * Get known fixed trip costs:
  * - flight
  * - hotel
- * - selected transfers
+ * - selected transfers only when they cost more than 0
  */
 function getKnownTripCosts({
   selectedOffer,
@@ -563,25 +718,55 @@ function getKnownTripCosts({
   selectedReturnTransfer,
 }) {
   const flightCost = toNumber(selectedOffer?.price?.total);
+
   const hotelCost = toNumber(
     selectedHotel?.price_total_eur ?? selectedHotel?.price_total,
   );
+
   const arrivalTransferCost = toNumber(selectedArrivalTransfer?.price_total_eur);
   const returnTransferCost = toNumber(selectedReturnTransfer?.price_total_eur);
+
+  // Do not count fake/free transfer rows.
+  const paidTransferCost =
+    (arrivalTransferCost > 0 ? arrivalTransferCost : 0) +
+    (returnTransferCost > 0 ? returnTransferCost : 0);
 
   return {
     flightCost,
     hotelCost,
     arrivalTransferCost,
     returnTransferCost,
-    transportCost: arrivalTransferCost + returnTransferCost,
-    knownTotal:
-      flightCost + hotelCost + arrivalTransferCost + returnTransferCost,
+    paidTransferCost,
+    knownTotal: flightCost + hotelCost + paidTransferCost,
   };
 }
 
 /**
- * Simple reusable collapsible section.
+ * Estimate public transport cost.
+ *
+ * Google Routes transit responses do not always provide fare data.
+ * For MVP we estimate airport/city public transport at €8 per adult per transit leg.
+ *
+ * Later this can be improved with:
+ * - Google fare data if present
+ * - city-specific transit APIs
+ * - fixed airport express prices
+ */
+function estimatePublicTransportCost(transportLegs, adults = 1) {
+  const adultCount = Math.max(1, Number(adults || 1));
+
+  const transitLegCount = transportLegs.filter((leg) => {
+    const mode = String(leg.mode || leg.label || "").toLowerCase();
+    return mode.includes("transit") || mode.includes("public");
+  }).length;
+
+  return transitLegCount * 8 * adultCount;
+}
+
+/**
+ * VS Code-style collapsible section.
+ *
+ * This gives a cleaner UI than plain <details> and supports smooth animation.
  */
 function CollapsibleSection({ title, subtitle, defaultOpen = false, children }) {
   const [isOpen, setIsOpen] = useState(defaultOpen);
@@ -614,8 +799,6 @@ function CollapsibleSection({ title, subtitle, defaultOpen = false, children }) 
         CSS grid animation trick:
         - closed: grid-template-rows: 0fr
         - open:   grid-template-rows: 1fr
-
-        This allows smooth height animation without measuring content manually.
       */}
       <div
         style={{
@@ -684,8 +867,11 @@ function buildPrintableHtml({
   const dayHtml = days
     .map((day) => {
       const itemHtml = day.items
-        .map(
-          (item) => `
+        .map((item) => {
+          const itemLink =
+            item.link || buildGoogleMapsSearchUrl(item.name, destinationCity);
+
+          return `
             <li>
               <strong>${escapeHtml(item.time || "")} ${escapeHtml(item.name || "")}</strong>
               <span class="type">${escapeHtml(item.type || "")}</span>
@@ -701,14 +887,13 @@ function buildPrintableHtml({
                     }</p>`
                   : ""
               }
-              ${
-                item.link
-                  ? `<a href="${escapeHtml(item.link)}" target="_blank">Open booking / map link</a>`
-                  : ""
-              }
+              <p class="muted">Source: ${escapeHtml(item.source_label || "Google Maps search")}</p>
+              <a href="${escapeHtml(itemLink)}" target="_blank">
+                Open in Google Maps / booking page
+              </a>
             </li>
-          `,
-        )
+          `;
+        })
         .join("");
 
       return `
@@ -821,7 +1006,19 @@ function buildPrintableHtml({
 
           <p class="budget"><strong>Flight cost:</strong> ${formatMoney(summary.flightCost)}</p>
           <p class="budget"><strong>Hotel cost:</strong> ${formatMoney(summary.hotelCost)}</p>
-          <p class="budget"><strong>Selected transfer cost:</strong> ${formatMoney(summary.transportCost)}</p>
+
+          ${
+            summary.paidTransferCost > 0
+              ? `<p class="budget"><strong>Selected transfer cost:</strong> ${formatMoney(summary.paidTransferCost)}</p>`
+              : ""
+          }
+
+          ${
+            summary.estimatedPublicTransportCost > 0
+              ? `<p class="budget"><strong>Public transport estimate:</strong> ${formatMoney(summary.estimatedPublicTransportCost)}</p>`
+              : ""
+          }
+
           <p class="budget"><strong>Estimated activities + food:</strong> ${formatMoney(summary.estimatedActivitiesCost)}</p>
           <p class="budget"><strong>Estimated total trip cost:</strong> ${formatMoney(summary.estimatedTotalTripCost)}</p>
           <p class="budget"><strong>Estimated remaining budget:</strong> ${formatMoney(summary.remainingBudgetAfterActivities)}</p>
@@ -935,17 +1132,33 @@ export default function TripItineraryBuilder({
     selectedReturnTransfer,
   ]);
 
+  const estimatedPublicTransportCost = useMemo(() => {
+    // Only estimate public transport if the user has not selected paid transfers.
+    // If paid transfers exist, those are already counted in knownCosts.
+    if (knownCosts.paidTransferCost > 0) return 0;
+
+    return estimatePublicTransportCost(transportLegs, adults);
+  }, [transportLegs, adults, knownCosts.paidTransferCost]);
+
   const estimatedActivitiesCost = useMemo(() => {
     return calculateItineraryEstimate(days);
   }, [days]);
 
   const estimatedTotalTripCost = useMemo(() => {
-    return knownCosts.knownTotal + estimatedActivitiesCost;
-  }, [knownCosts, estimatedActivitiesCost]);
+    return (
+      knownCosts.knownTotal +
+      estimatedPublicTransportCost +
+      estimatedActivitiesCost
+    );
+  }, [knownCosts, estimatedPublicTransportCost, estimatedActivitiesCost]);
 
   const estimatedRemainingAfterActivities = useMemo(() => {
-    return toNumber(remainingBudget) - estimatedActivitiesCost;
-  }, [remainingBudget, estimatedActivitiesCost]);
+    return (
+      toNumber(remainingBudget) -
+      estimatedPublicTransportCost -
+      estimatedActivitiesCost
+    );
+  }, [remainingBudget, estimatedPublicTransportCost, estimatedActivitiesCost]);
 
   /**
    * Load restaurants, attractions, tours, and AI itinerary.
@@ -1012,7 +1225,7 @@ export default function TripItineraryBuilder({
       };
 
       if (randomizeOnly) {
-        setDays(buildRandomDays(tripDays, currentPools, adults));
+        setDays(buildRandomDays(tripDays, currentPools, adults, destinationCity));
         setHasLoadedOnce(true);
         return;
       }
@@ -1030,7 +1243,16 @@ export default function TripItineraryBuilder({
         setProviderWarnings((prev) => [...prev, itineraryRes.data.provider_warning]);
       }
 
-      setDays(normalizeAiItinerary(itineraryRes.data, tripDays, currentPools, adults));
+      setDays(
+        normalizeAiItinerary(
+          itineraryRes.data,
+          tripDays,
+          currentPools,
+          adults,
+          destinationCity,
+        ),
+      );
+
       setHasLoadedOnce(true);
     } catch (err) {
       console.error(err);
@@ -1043,7 +1265,7 @@ export default function TripItineraryBuilder({
       setError(detail);
 
       if (restaurants.length || attractions.length || tours.length) {
-        setDays(buildRandomDays(tripDays, pools, adults));
+        setDays(buildRandomDays(tripDays, pools, adults, destinationCity));
       }
     } finally {
       setLoading(false);
@@ -1086,6 +1308,7 @@ export default function TripItineraryBuilder({
               item: replacement,
               fallbackName: item.name,
               adults,
+              destinationCity,
             });
           }),
         };
@@ -1137,9 +1360,10 @@ export default function TripItineraryBuilder({
                   rating: null,
                   review_count: null,
                   address: "",
-                  link,
+                  link: link || buildGoogleMapsSearchUrl(name, destinationCity),
                   estimated_price_eur: toNumber(estimatedPrice),
                   price_note: "Manual estimate",
+                  source_label: link ? "Manual link" : "Google Maps search",
                   raw: {},
                 },
               ],
@@ -1153,7 +1377,7 @@ export default function TripItineraryBuilder({
    * Randomize one day.
    */
   function randomizeDay(dayId) {
-    const randomDay = buildRandomDays(1, pools, adults)[0];
+    const randomDay = buildRandomDays(1, pools, adults, destinationCity)[0];
 
     setDays((prevDays) =>
       prevDays.map((day) =>
@@ -1218,7 +1442,8 @@ export default function TripItineraryBuilder({
         leaveHomeTime,
         flightCost: knownCosts.flightCost,
         hotelCost: knownCosts.hotelCost,
-        transportCost: knownCosts.transportCost,
+        paidTransferCost: knownCosts.paidTransferCost,
+        estimatedPublicTransportCost,
         estimatedActivitiesCost,
         estimatedTotalTripCost,
         remainingBudgetAfterActivities: estimatedRemainingAfterActivities,
@@ -1295,10 +1520,19 @@ export default function TripItineraryBuilder({
           <strong>{formatMoney(knownCosts.hotelCost)}</strong>
         </div>
 
-        <div style={styles.summaryCard}>
-          <span style={styles.summaryLabel}>Selected transfers</span>
-          <strong>{formatMoney(knownCosts.transportCost)}</strong>
-        </div>
+        {knownCosts.paidTransferCost > 0 && (
+          <div style={styles.summaryCard}>
+            <span style={styles.summaryLabel}>Selected transfers</span>
+            <strong>{formatMoney(knownCosts.paidTransferCost)}</strong>
+          </div>
+        )}
+
+        {knownCosts.paidTransferCost === 0 && estimatedPublicTransportCost > 0 && (
+          <div style={styles.summaryCard}>
+            <span style={styles.summaryLabel}>Public transport estimate</span>
+            <strong>{formatMoney(estimatedPublicTransportCost)}</strong>
+          </div>
+        )}
 
         <div style={styles.summaryCard}>
           <span style={styles.summaryLabel}>Activities + food estimate</span>
@@ -1506,16 +1740,23 @@ export default function TripItineraryBuilder({
                       <span style={styles.muted}>({item.price_note})</span>
                     </p>
 
-                    {item.link && (
+                    <div style={styles.linkRow}>
+                      <span style={styles.sourceText}>
+                        Source: {item.source_label || "Google Maps search"}
+                      </span>
+
                       <a
-                        href={item.link}
+                        href={
+                          item.link ||
+                          buildGoogleMapsSearchUrl(item.name, destinationCity)
+                        }
                         target="_blank"
                         rel="noreferrer"
                         style={styles.externalLink}
                       >
-                        Open booking / map link
+                        Open in Google Maps / booking page
                       </a>
-                    )}
+                    </div>
                   </div>
                 </div>
               ))}
@@ -1536,6 +1777,7 @@ const styles = {
     background: "linear-gradient(180deg, #0b1220 0%, #0f172a 100%)",
     color: "#e5e7eb",
   },
+
   headerRow: {
     display: "flex",
     justifyContent: "space-between",
@@ -1543,6 +1785,7 @@ const styles = {
     alignItems: "flex-start",
     flexWrap: "wrap",
   },
+
   eyebrow: {
     margin: 0,
     color: "#93c5fd",
@@ -1551,21 +1794,25 @@ const styles = {
     textTransform: "uppercase",
     letterSpacing: "0.08em",
   },
+
   title: {
     margin: "4px 0",
     color: "#ffffff",
     fontSize: "26px",
   },
+
   subtitle: {
     margin: 0,
     color: "#9ca3af",
     maxWidth: "860px",
   },
+
   headerActions: {
     display: "flex",
     gap: "10px",
     flexWrap: "wrap",
   },
+
   primaryButton: {
     padding: "10px 14px",
     borderRadius: "10px",
@@ -1575,6 +1822,7 @@ const styles = {
     fontWeight: 700,
     cursor: "pointer",
   },
+
   secondaryButton: {
     padding: "10px 14px",
     borderRadius: "10px",
@@ -1584,99 +1832,106 @@ const styles = {
     fontWeight: 700,
     cursor: "pointer",
   },
+
   summaryGrid: {
     display: "grid",
     gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))",
     gap: "10px",
     marginTop: "16px",
   },
+
   summaryCard: {
     padding: "12px",
     borderRadius: "12px",
     border: "1px solid #1f2937",
     background: "#111827",
   },
+
   summaryLabel: {
     display: "block",
     color: "#9ca3af",
     fontSize: "12px",
     marginBottom: "4px",
   },
-collapsible: {
-  marginTop: "14px",
-  borderRadius: "12px",
-  border: "1px solid #334155",
-  background: "#0f172a",
-  overflow: "hidden",
-},
 
-collapsibleButton: {
-  width: "100%",
-  padding: "13px 14px",
-  border: "none",
-  background: "#111827",
-  color: "#ffffff",
-  cursor: "pointer",
-  display: "flex",
-  alignItems: "center",
-  gap: "10px",
-  textAlign: "left",
-},
+  collapsible: {
+    marginTop: "14px",
+    borderRadius: "12px",
+    border: "1px solid #334155",
+    background: "#0f172a",
+    overflow: "hidden",
+  },
 
-collapsibleArrow: {
-  display: "inline-flex",
-  alignItems: "center",
-  justifyContent: "center",
-  width: "18px",
-  height: "18px",
-  color: "#93c5fd",
-  fontSize: "12px",
-  transition: "transform 180ms ease",
-  flexShrink: 0,
-},
+  collapsibleButton: {
+    width: "100%",
+    padding: "13px 14px",
+    border: "none",
+    background: "#111827",
+    color: "#ffffff",
+    cursor: "pointer",
+    display: "flex",
+    alignItems: "center",
+    gap: "10px",
+    textAlign: "left",
+  },
 
-collapsibleTitleWrap: {
-  display: "flex",
-  alignItems: "baseline",
-  gap: "10px",
-  minWidth: 0,
-},
+  collapsibleArrow: {
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    width: "18px",
+    height: "18px",
+    color: "#93c5fd",
+    fontSize: "12px",
+    transition: "transform 180ms ease",
+    flexShrink: 0,
+  },
 
-collapsibleTitle: {
-  fontWeight: 800,
-  color: "#ffffff",
-},
+  collapsibleTitleWrap: {
+    display: "flex",
+    alignItems: "baseline",
+    gap: "10px",
+    minWidth: 0,
+  },
 
-collapsibleSubtitle: {
-  color: "#9ca3af",
-  fontSize: "13px",
-  fontWeight: 500,
-},
+  collapsibleTitle: {
+    fontWeight: 800,
+    color: "#ffffff",
+  },
 
-collapsibleBodyOuter: {
-  display: "grid",
-  transition: "grid-template-rows 220ms ease, opacity 180ms ease",
-},
+  collapsibleSubtitle: {
+    color: "#9ca3af",
+    fontSize: "13px",
+    fontWeight: 500,
+  },
 
-collapsibleBodyInner: {
-  overflow: "hidden",
-},
+  collapsibleBodyOuter: {
+    display: "grid",
+    transition: "grid-template-rows 220ms ease, opacity 180ms ease",
+  },
 
-collapsibleContent: {
-  padding: "14px",
-  borderTop: "1px solid #1f2937",
-},
+  collapsibleBodyInner: {
+    overflow: "hidden",
+  },
+
+  collapsibleContent: {
+    padding: "14px",
+    borderTop: "1px solid #1f2937",
+  },
+
   flightGrid: {
     display: "grid",
     gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
     gap: "10px",
   },
+
   flightCard: {
     padding: "12px",
     borderRadius: "10px",
     border: "1px solid #1f2937",
     background: "#111827",
   },
+
   routeCard: {
     padding: "10px",
     borderRadius: "10px",
@@ -1684,6 +1939,7 @@ collapsibleContent: {
     background: "#111827",
     marginBottom: "8px",
   },
+
   label: {
     display: "block",
     marginTop: "16px",
@@ -1691,6 +1947,7 @@ collapsibleContent: {
     fontWeight: 700,
     color: "#f9fafb",
   },
+
   textarea: {
     width: "100%",
     boxSizing: "border-box",
@@ -1701,6 +1958,7 @@ collapsibleContent: {
     color: "#ffffff",
     resize: "vertical",
   },
+
   warning: {
     marginTop: "10px",
     padding: "10px",
@@ -1709,6 +1967,7 @@ collapsibleContent: {
     background: "rgba(245, 158, 11, 0.12)",
     color: "#fbbf24",
   },
+
   error: {
     marginTop: "10px",
     padding: "10px",
@@ -1717,6 +1976,7 @@ collapsibleContent: {
     background: "rgba(239, 68, 68, 0.12)",
     color: "#fecaca",
   },
+
   loadingBox: {
     marginTop: "14px",
     padding: "16px",
@@ -1724,6 +1984,7 @@ collapsibleContent: {
     background: "#111827",
     border: "1px solid #374151",
   },
+
   emptyBox: {
     marginTop: "14px",
     padding: "16px",
@@ -1732,17 +1993,20 @@ collapsibleContent: {
     border: "1px solid #374151",
     color: "#cbd5e1",
   },
+
   daysGrid: {
     display: "grid",
     gap: "14px",
     marginTop: "18px",
   },
+
   dayCard: {
     borderRadius: "16px",
     border: "1px solid #2563eb",
     background: "#0f172a",
     overflow: "hidden",
   },
+
   dayHeader: {
     display: "flex",
     justifyContent: "space-between",
@@ -1752,25 +2016,30 @@ collapsibleContent: {
     borderBottom: "1px solid #1f2937",
     background: "#111827",
   },
+
   dayNumber: {
     margin: 0,
     color: "#93c5fd",
     fontWeight: 700,
   },
+
   dayTitle: {
     margin: "4px 0",
     color: "#ffffff",
   },
+
   dayDate: {
     margin: 0,
     color: "#9ca3af",
   },
+
   dayActions: {
     display: "flex",
     gap: "8px",
     alignItems: "center",
     flexWrap: "wrap",
   },
+
   smallButton: {
     padding: "8px 10px",
     borderRadius: "8px",
@@ -1779,11 +2048,13 @@ collapsibleContent: {
     color: "#ffffff",
     cursor: "pointer",
   },
+
   timeline: {
     padding: "14px",
     display: "grid",
     gap: "12px",
   },
+
   itemCard: {
     display: "grid",
     gridTemplateColumns: "90px 1fr",
@@ -1793,19 +2064,23 @@ collapsibleContent: {
     border: "1px solid #1f2937",
     background: "#111827",
   },
+
   timeBadge: {
     color: "#bfdbfe",
     fontWeight: 700,
   },
+
   itemContent: {
     minWidth: 0,
   },
+
   itemTopRow: {
     display: "flex",
     justifyContent: "space-between",
     gap: "12px",
     alignItems: "flex-start",
   },
+
   typeBadge: {
     display: "inline-block",
     padding: "2px 8px",
@@ -1815,15 +2090,18 @@ collapsibleContent: {
     fontSize: "12px",
     textTransform: "capitalize",
   },
+
   itemName: {
     margin: "6px 0",
     color: "#ffffff",
   },
+
   itemActions: {
     display: "flex",
     gap: "8px",
     flexWrap: "wrap",
   },
+
   linkButton: {
     padding: "6px 8px",
     borderRadius: "8px",
@@ -1832,6 +2110,7 @@ collapsibleContent: {
     color: "#93c5fd",
     cursor: "pointer",
   },
+
   dangerButton: {
     padding: "6px 8px",
     borderRadius: "8px",
@@ -1840,20 +2119,37 @@ collapsibleContent: {
     color: "#fca5a5",
     cursor: "pointer",
   },
+
   itemDescription: {
     margin: "6px 0",
     color: "#cbd5e1",
   },
+
   muted: {
     margin: "4px 0",
     color: "#9ca3af",
     fontSize: "13px",
   },
+
   priceLine: {
     margin: "6px 0",
     color: "#86efac",
     fontWeight: 700,
   },
+
+  linkRow: {
+    display: "flex",
+    gap: "12px",
+    alignItems: "center",
+    flexWrap: "wrap",
+    marginTop: "8px",
+  },
+
+  sourceText: {
+    color: "#9ca3af",
+    fontSize: "13px",
+  },
+
   externalLink: {
     display: "inline-block",
     marginTop: "4px",
