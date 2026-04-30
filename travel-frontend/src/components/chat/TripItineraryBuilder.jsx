@@ -584,18 +584,51 @@ function getKnownTripCosts({
  * Simple reusable collapsible section.
  */
 function CollapsibleSection({ title, subtitle, defaultOpen = false, children }) {
-  return (
-    <details style={styles.collapsible} open={defaultOpen}>
-      <summary style={styles.collapsibleSummary}>
-        <div>
-          <strong>{title}</strong>
-          {subtitle && <span style={styles.collapsibleSubtitle}>{subtitle}</span>}
-        </div>
-        <span style={styles.chevron}>Open / close</span>
-      </summary>
+  const [isOpen, setIsOpen] = useState(defaultOpen);
 
-      <div style={styles.collapsibleContent}>{children}</div>
-    </details>
+  return (
+    <section style={styles.collapsible}>
+      <button
+        type="button"
+        onClick={() => setIsOpen((current) => !current)}
+        style={styles.collapsibleButton}
+        aria-expanded={isOpen}
+      >
+        <span
+          style={{
+            ...styles.collapsibleArrow,
+            transform: isOpen ? "rotate(90deg)" : "rotate(0deg)",
+          }}
+        >
+          ▶
+        </span>
+
+        <span style={styles.collapsibleTitleWrap}>
+          <span style={styles.collapsibleTitle}>{title}</span>
+
+          {subtitle && <span style={styles.collapsibleSubtitle}>{subtitle}</span>}
+        </span>
+      </button>
+
+      {/*
+        CSS grid animation trick:
+        - closed: grid-template-rows: 0fr
+        - open:   grid-template-rows: 1fr
+
+        This allows smooth height animation without measuring content manually.
+      */}
+      <div
+        style={{
+          ...styles.collapsibleBodyOuter,
+          gridTemplateRows: isOpen ? "1fr" : "0fr",
+          opacity: isOpen ? 1 : 0,
+        }}
+      >
+        <div style={styles.collapsibleBodyInner}>
+          <div style={styles.collapsibleContent}>{children}</div>
+        </div>
+      </div>
+    </section>
   );
 }
 
@@ -1569,36 +1602,70 @@ const styles = {
     fontSize: "12px",
     marginBottom: "4px",
   },
-  collapsible: {
-    marginTop: "14px",
-    borderRadius: "12px",
-    border: "1px solid #334155",
-    background: "#0f172a",
-    overflow: "hidden",
-  },
-  collapsibleSummary: {
-    cursor: "pointer",
-    padding: "14px",
-    display: "flex",
-    justifyContent: "space-between",
-    gap: "12px",
-    alignItems: "center",
-    color: "#ffffff",
-    background: "#111827",
-  },
-  collapsibleSubtitle: {
-    marginLeft: "10px",
-    color: "#9ca3af",
-    fontSize: "13px",
-    fontWeight: 400,
-  },
-  chevron: {
-    color: "#60a5fa",
-    fontSize: "12px",
-  },
-  collapsibleContent: {
-    padding: "14px",
-  },
+collapsible: {
+  marginTop: "14px",
+  borderRadius: "12px",
+  border: "1px solid #334155",
+  background: "#0f172a",
+  overflow: "hidden",
+},
+
+collapsibleButton: {
+  width: "100%",
+  padding: "13px 14px",
+  border: "none",
+  background: "#111827",
+  color: "#ffffff",
+  cursor: "pointer",
+  display: "flex",
+  alignItems: "center",
+  gap: "10px",
+  textAlign: "left",
+},
+
+collapsibleArrow: {
+  display: "inline-flex",
+  alignItems: "center",
+  justifyContent: "center",
+  width: "18px",
+  height: "18px",
+  color: "#93c5fd",
+  fontSize: "12px",
+  transition: "transform 180ms ease",
+  flexShrink: 0,
+},
+
+collapsibleTitleWrap: {
+  display: "flex",
+  alignItems: "baseline",
+  gap: "10px",
+  minWidth: 0,
+},
+
+collapsibleTitle: {
+  fontWeight: 800,
+  color: "#ffffff",
+},
+
+collapsibleSubtitle: {
+  color: "#9ca3af",
+  fontSize: "13px",
+  fontWeight: 500,
+},
+
+collapsibleBodyOuter: {
+  display: "grid",
+  transition: "grid-template-rows 220ms ease, opacity 180ms ease",
+},
+
+collapsibleBodyInner: {
+  overflow: "hidden",
+},
+
+collapsibleContent: {
+  padding: "14px",
+  borderTop: "1px solid #1f2937",
+},
   flightGrid: {
     display: "grid",
     gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
