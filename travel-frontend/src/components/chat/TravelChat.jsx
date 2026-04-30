@@ -1,3 +1,5 @@
+// travel-frontend/src/components/chat/TravelChat.jsx
+
 import { useMemo, useState } from "react";
 import { api } from "../../api";
 
@@ -8,10 +10,13 @@ import HotelResults from "./HotelResults";
 import TransferResults from "./TransferResults";
 import TripPlanForm from "./TripPlanForm";
 import GeneratedPlan from "./GeneratedPlan";
-import TravelExtrasPanel from "./TravelExtrasPanel";
+import TripItineraryBuilder from "./TripItineraryBuilder";
 
 /**
- * Build structured params from the search form for the /chat/search-flights/ endpoint.
+ * Build structured params from the flight search form.
+ *
+ * This goes to:
+ *   POST /api/chat/search-flights/
  */
 function buildFlightParams(form) {
   return {
@@ -32,7 +37,7 @@ function buildFlightParams(form) {
 }
 
 /**
- * Convert backend flight_widget shape into editable form state.
+ * Convert backend flight_widget shape into editable React form state.
  */
 function widgetToForm(widget) {
   if (!widget) {
@@ -63,6 +68,17 @@ function widgetToForm(widget) {
   };
 }
 
+/**
+ * Main travel chat page.
+ *
+ * Flow:
+ * 1. User sends text prompt or edits flight search widget.
+ * 2. User selects a flight.
+ * 3. User chooses hotel or custom address.
+ * 4. User chooses transport/transfer options.
+ * 5. User presses Generate trip plan.
+ * 6. New TripItineraryBuilder appears with editable day-by-day itinerary.
+ */
 export default function TravelChat() {
   // -----------------------------
   // Basic chat state
@@ -84,28 +100,19 @@ export default function TravelChat() {
 
   // -----------------------------
   // Flow step
-  // Steps used:
-  // - "chat"
-  // - "stay-choice"
-  // - "hotel-select"
-  // - "transfer-select"
-  // - "route-details"
   // -----------------------------
   const [step, setStep] = useState("chat");
 
   // -----------------------------
-  // Stay / hotel state
+  // Hotel / destination state
   // -----------------------------
-  const [stayMode, setStayMode] = useState(null); // "hotel" | "address" | null
+  const [stayMode, setStayMode] = useState(null);
   const [hotelWidget, setHotelWidget] = useState(null);
   const [hotelLoading, setHotelLoading] = useState(false);
   const [selectedHotel, setSelectedHotel] = useState(null);
 
   // -----------------------------
-  // Transfer search state
-  // transferSearchTarget:
-  // - "arrival": arrival airport -> hotel/address
-  // - "return": hotel/address -> return airport
+  // Transfer state
   // -----------------------------
   const [transferWidget, setTransferWidget] = useState(null);
   const [transferLoading, setTransferLoading] = useState(false);
@@ -125,11 +132,14 @@ export default function TravelChat() {
   const [returnHomeMode, setReturnHomeMode] = useState("drive");
 
   // -----------------------------
-  // Generated plan
+  // Generated route plan
   // -----------------------------
   const [generatedPlan, setGeneratedPlan] = useState(null);
   const [planLoading, setPlanLoading] = useState(false);
 
+  /**
+   * Keep chat transcript updates simple.
+   */
   function appendTranscriptLine(prefix, text) {
     setOut((prev) => `${prev}${prefix}: ${text}\n`);
   }
@@ -164,6 +174,9 @@ export default function TravelChat() {
     setGeneratedPlan(null);
   }
 
+  /**
+   * Clear the whole travel chat.
+   */
   function handleClearAll() {
     setPrompt("");
     setOut("");
@@ -172,6 +185,9 @@ export default function TravelChat() {
     resetSelectionFlow();
   }
 
+  /**
+   * Apply backend flight widget and sync it into the editable form.
+   */
   function applyFlightWidget(widget) {
     setFlightWidget(widget || null);
     setSearchForm(widgetToForm(widget));
@@ -187,13 +203,12 @@ export default function TravelChat() {
     setPrompt("");
     setFlightWidget(null);
     resetSelectionFlow();
-
     appendTranscriptLine("YOU", userText);
 
     try {
-      const r = await api.post("/chat/send/", { prompt: userText });
-      appendTranscriptLine("BOT", r.data?.answer || "Done.");
-      applyFlightWidget(r.data?.flight_widget || null);
+      const response = await api.post("/chat/send/", { prompt: userText });
+      appendTranscriptLine("BOT", response.data?.answer || "Done.");
+      applyFlightWidget(response.data?.flight_widget || null);
     } catch (err) {
       console.error(err);
       appendTranscriptLine("BOT", "Error: request failed.");
@@ -201,8 +216,7 @@ export default function TravelChat() {
   }
 
   /**
-   * Re-run flight search from widget controls using the structured endpoint
-   * (no NLP round-trip — fields are passed directly).
+   * Re-run flight search from the editable widget.
    */
   async function handleSearchAgain() {
     if (!searchForm.origin || !searchForm.destination || !searchForm.departure_date) {
@@ -214,6 +228,7 @@ export default function TravelChat() {
 
     setFlightWidget(null);
     resetSelectionFlow();
+
     appendTranscriptLine(
       "SEARCH",
       `${params.origin} → ${params.destination} on ${params.departure_date}` +
@@ -222,9 +237,9 @@ export default function TravelChat() {
     );
 
     try {
-      const r = await api.post("/chat/search-flights/", params);
-      appendTranscriptLine("BOT", r.data?.answer || "Done.");
-      applyFlightWidget(r.data?.flight_widget || null);
+      const response = await api.post("/chat/search-flights/", params);
+      appendTranscriptLine("BOT", response.data?.answer || "Done.");
+      applyFlightWidget(response.data?.flight_widget || null);
     } catch (err) {
       console.error(err);
       const detail = err?.response?.data?.detail || "Flight search failed.";
@@ -239,7 +254,7 @@ export default function TravelChat() {
     setSelectedOffer(offer);
     setSelectedOfferKey(offerKey);
 
-    // reset downstream state
+    // Reset everything after flight selection.
     setStayMode(null);
     setHotelWidget(null);
     setSelectedHotel(null);
@@ -268,16 +283,15 @@ export default function TravelChat() {
       setHotelLoading(true);
       setStep("hotel-select");
 
-      const res = await api.post("/chat/search-hotels/", {
+      const response = await api.post("/chat/search-hotels/", {
         selected_offer: selectedOffer,
-        destination_city:
-          flightWidget?.destination_city || flightWidget?.destination_iata || "",
+        destination_city: flightWidget?.destination_city || flightWidget?.destination_iata || "",
         adults: flightWidget?.adults || 1,
         budget_remaining: remainingBudget,
       });
 
       setStayMode("hotel");
-      setHotelWidget(res.data || null);
+      setHotelWidget(response.data || null);
     } catch (err) {
       console.error(err);
       const detail =
@@ -305,18 +319,19 @@ export default function TravelChat() {
 
     setArrivalDestinationAddress("");
     setGeneratedPlan(null);
+
     setStep("route-details");
   }
 
   /**
-   * Select hotel and move to route-details.
+   * Select hotel and move to route details.
    */
   function handleSelectHotel(hotel) {
     setSelectedHotel(hotel);
     setStayMode("hotel");
     setArrivalDestinationAddress(hotel?.address || hotel?.name || "");
 
-    // hotel changed => clear transfer selections
+    // Hotel changed, so clear transfer selections.
     setTransferWidget(null);
     setTransferSearchTarget(null);
     setSelectedArrivalTransfer(null);
@@ -328,7 +343,6 @@ export default function TravelChat() {
 
   /**
    * Search transfer for arrival airport -> hotel/address.
-   * Backend can derive airport + timing from selected_offer.
    */
   async function handleSearchArrivalTransfer() {
     if (!selectedOffer || !flightWidget) {
@@ -346,7 +360,7 @@ export default function TravelChat() {
       setTransferSearchTarget("arrival");
       setStep("transfer-select");
 
-      const res = await api.post("/chat/search-transfers/", {
+      const response = await api.post("/chat/search-transfers/", {
         selected_offer: selectedOffer,
         direction: "arrival",
         destination_address: arrivalDestinationAddress,
@@ -354,7 +368,7 @@ export default function TravelChat() {
         budget_remaining: remainingBudget,
       });
 
-      setTransferWidget(res.data || null);
+      setTransferWidget(response.data || null);
     } catch (err) {
       console.error(err);
       const detail =
@@ -386,7 +400,7 @@ export default function TravelChat() {
       setTransferSearchTarget("return");
       setStep("transfer-select");
 
-      const res = await api.post("/chat/search-transfers/", {
+      const response = await api.post("/chat/search-transfers/", {
         selected_offer: selectedOffer,
         direction: "return",
         destination_address: arrivalDestinationAddress,
@@ -394,7 +408,7 @@ export default function TravelChat() {
         budget_remaining: remainingBudget,
       });
 
-      setTransferWidget(res.data || null);
+      setTransferWidget(response.data || null);
     } catch (err) {
       console.error(err);
       const detail =
@@ -408,7 +422,7 @@ export default function TravelChat() {
   }
 
   /**
-   * Save chosen transfer and go back to route-details.
+   * Save chosen transfer and go back to route details.
    */
   function handleSelectTransfer(transfer) {
     if (transferSearchTarget === "arrival") {
@@ -424,7 +438,9 @@ export default function TravelChat() {
   }
 
   /**
-   * Generate final trip plan.
+   * Generate route/transport plan.
+   *
+   * After this succeeds, TripItineraryBuilder appears automatically.
    */
   async function handleGeneratePlan() {
     if (!selectedOffer || !flightWidget) {
@@ -442,7 +458,6 @@ export default function TravelChat() {
       return;
     }
 
-    // If user selected transfer mode but did not actually pick one, block submit.
     if (fromAirportMode === "transfer" && !selectedArrivalTransfer) {
       alert("Please search and select an arrival transfer first.");
       return;
@@ -460,7 +475,7 @@ export default function TravelChat() {
     try {
       setPlanLoading(true);
 
-      const res = await api.post("/chat/generate-trip-plan/", {
+      const response = await api.post("/chat/generate-trip-plan/", {
         selected_offer: selectedOffer,
         origin: flightWidget?.origin_iata || flightWidget?.origin_city,
         destination: flightWidget?.destination_iata || flightWidget?.destination_city,
@@ -472,6 +487,7 @@ export default function TravelChat() {
 
         start_address: startAddress,
         arrival_destination_address: arrivalDestinationAddress,
+
         to_airport_mode: toAirportMode,
         from_airport_mode: fromAirportMode,
         return_to_airport_mode: returnToAirportMode,
@@ -480,6 +496,7 @@ export default function TravelChat() {
         selected_hotel: selectedHotel
           ? {
               name: selectedHotel.name,
+              address: selectedHotel.address,
               price_total: selectedHotel.price_total,
               currency: selectedHotel.currency,
               price_total_eur: selectedHotel.price_total_eur,
@@ -509,11 +526,10 @@ export default function TravelChat() {
           : null,
       });
 
-      setGeneratedPlan(res.data);
+      setGeneratedPlan(response.data);
     } catch (err) {
       console.error(err);
-      const detail =
-        err?.response?.data?.detail || "Failed to generate trip plan.";
+      const detail = err?.response?.data?.detail || "Failed to generate trip plan.";
       alert(detail);
     } finally {
       setPlanLoading(false);
@@ -531,7 +547,11 @@ export default function TravelChat() {
     const returnTransferPrice = Number(selectedReturnTransfer?.price_total_eur || 0);
 
     const result =
-      budget - selectedPrice - hotelPrice - arrivalTransferPrice - returnTransferPrice;
+      budget -
+      selectedPrice -
+      hotelPrice -
+      arrivalTransferPrice -
+      returnTransferPrice;
 
     return Number.isFinite(result) ? result : 0;
   }, [
@@ -543,70 +563,29 @@ export default function TravelChat() {
   ]);
 
   return (
-    <div>
-      {/* Free-text prompt row */}
-      <div
-        style={{
-          display: "flex",
-          gap: "10px",
-          alignItems: "center",
-          flexWrap: "wrap",
-          marginBottom: "16px",
-        }}
-      >
+    <main style={styles.page}>
+      <section style={styles.chatBar}>
         <input
           value={prompt}
-          onChange={(e) => setPrompt(e.target.value)}
+          onChange={(event) => setPrompt(event.target.value)}
           placeholder='Try: "flight from Riga to Amsterdam tomorrow, 1 adult"'
-          style={{
-            flex: 1,
-            minWidth: "280px",
-            padding: "12px",
-            borderRadius: "8px",
-            border: "1px solid #3a4250",
-            background: "#f5f5f5",
-            color: "#111",
-          }}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") send();
+          style={styles.promptInput}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") send();
           }}
         />
 
-        <button
-          onClick={send}
-          style={{
-            padding: "12px 18px",
-            borderRadius: "8px",
-            border: "none",
-            background: "#f5f5f5",
-            color: "#111",
-            cursor: "pointer",
-            fontWeight: "bold",
-          }}
-        >
+        <button type="button" onClick={send} style={styles.primaryButton}>
           Send
         </button>
 
-        <button
-          onClick={handleClearAll}
-          style={{
-            padding: "12px 18px",
-            borderRadius: "8px",
-            border: "none",
-            background: "#f5f5f5",
-            color: "#111",
-            cursor: "pointer",
-            fontWeight: "bold",
-          }}
-        >
+        <button type="button" onClick={handleClearAll} style={styles.secondaryButton}>
           Clear
         </button>
-      </div>
+      </section>
 
-      {/* Transcript */}
       <ChatTranscript text={out} />
 
-      {/* Flight search widget + offers */}
       {flightWidget && (
         <FlightResults
           flightWidget={flightWidget}
@@ -620,7 +599,6 @@ export default function TravelChat() {
         />
       )}
 
-      {/* Choose stay mode */}
       {selectedOffer && step === "stay-choice" && (
         <StayChoice
           hotelLoading={hotelLoading}
@@ -629,7 +607,6 @@ export default function TravelChat() {
         />
       )}
 
-      {/* Hotel search results */}
       {selectedOffer && step === "hotel-select" && (
         <HotelResults
           hotelLoading={hotelLoading}
@@ -639,7 +616,6 @@ export default function TravelChat() {
         />
       )}
 
-      {/* Transfer search results */}
       {selectedOffer && step === "transfer-select" && (
         <TransferResults
           transferLoading={transferLoading}
@@ -650,7 +626,6 @@ export default function TravelChat() {
         />
       )}
 
-      {/* Route details and mode selection */}
       {selectedOffer && step === "route-details" && (
         <TripPlanForm
           flightWidget={flightWidget}
@@ -676,17 +651,75 @@ export default function TravelChat() {
         />
       )}
 
-      {/* Things to do / restaurants / tours / AI itinerary */}
-      {selectedOffer && step === "route-details" && arrivalDestinationAddress && (
-        <TravelExtrasPanel
+      {/* Old raw route card is still useful, but it is now collapsed below the new UI. */}
+      {generatedPlan && (
+        <TripItineraryBuilder
           flightWidget={flightWidget}
+          selectedOffer={selectedOffer}
+          selectedHotel={selectedHotel}
+          selectedArrivalTransfer={selectedArrivalTransfer}
+          selectedReturnTransfer={selectedReturnTransfer}
+          routePlan={generatedPlan}
           arrivalDestinationAddress={arrivalDestinationAddress}
           remainingBudget={remainingBudget}
         />
       )}
 
-      {/* Final generated trip plan */}
-      {generatedPlan && <GeneratedPlan plan={generatedPlan} />}
-    </div>
+      {generatedPlan && (
+        <details style={styles.oldPlanDetails}>
+          <summary>Show old/generated transport plan</summary>
+          <GeneratedPlan plan={generatedPlan} />
+        </details>
+      )}
+    </main>
   );
 }
+
+const styles = {
+  page: {
+    padding: "18px",
+    background: "#0b0f17",
+    color: "#ffffff",
+    minHeight: "100vh",
+  },
+  chatBar: {
+    display: "flex",
+    gap: "10px",
+    flexWrap: "wrap",
+    marginBottom: "14px",
+  },
+  promptInput: {
+    flex: 1,
+    minWidth: "280px",
+    padding: "12px",
+    borderRadius: "10px",
+    border: "1px solid #374151",
+    background: "#111827",
+    color: "#ffffff",
+  },
+  primaryButton: {
+    padding: "10px 16px",
+    borderRadius: "10px",
+    border: "1px solid #2563eb",
+    background: "#2563eb",
+    color: "#ffffff",
+    cursor: "pointer",
+    fontWeight: 700,
+  },
+  secondaryButton: {
+    padding: "10px 16px",
+    borderRadius: "10px",
+    border: "1px solid #374151",
+    background: "#111827",
+    color: "#ffffff",
+    cursor: "pointer",
+    fontWeight: 700,
+  },
+  oldPlanDetails: {
+    marginTop: "16px",
+    padding: "12px",
+    borderRadius: "12px",
+    border: "1px solid #374151",
+    background: "#111827",
+  },
+};

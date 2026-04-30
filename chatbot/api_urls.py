@@ -9,13 +9,15 @@ This file is included from:
 That means every path here starts with:
     /api/chat/
 
-Example:
-    path("send/", ...) becomes /api/chat/send/
+Examples:
+    /api/chat/send/
+    /api/chat/search-flights/
+    /api/chat/places/
 """
 
 from django.urls import path
 
-# Existing core chat/travel flow views.
+# Core chat/trip views.
 from .api_views import (
     ChatSendView,
     GenerateTripPlanView,
@@ -24,9 +26,8 @@ from .api_views import (
     SearchTransfersView,
 )
 
-# New extended travel service views.
-# These are separated in api_views_extended.py so the large existing api_views.py
-# does not become even harder to maintain.
+# Extended travel data views.
+# These power restaurants, attractions, tours, car rental, and AI itinerary.
 from .api_views_extended import (
     AIRecommendView,
     GenerateItineraryView,
@@ -37,39 +38,30 @@ from .api_views_extended import (
 
 urlpatterns = [
     # ------------------------------------------------------------
-    # Core chatbot / trip-building flow
+    # Core chatbot / travel planning flow
     # ------------------------------------------------------------
 
     # Free-text chat endpoint.
-    # Example: POST /api/chat/send/
     path("send/", ChatSendView.as_view(), name="chat_send"),
 
-    # Structured flight search from the editable flight widget.
-    # Example: POST /api/chat/search-flights/
+    # Editable flight search widget endpoint.
     path(
         "search-flights/",
         SearchFlightsStructuredView.as_view(),
         name="search_flights_structured",
     ),
 
-    # Hotel search after the user selects a flight.
-    # Example: POST /api/chat/search-hotels/
-    path(
-        "search-hotels/",
-        SearchHotelsView.as_view(),
-        name="search_hotels",
-    ),
+    # Hotel search after a flight has been selected.
+    path("search-hotels/", SearchHotelsView.as_view(), name="search_hotels"),
 
-    # Transfer search after the user selects a hotel or custom address.
-    # Example: POST /api/chat/search-transfers/
+    # Airport transfer search.
     path(
         "search-transfers/",
         SearchTransfersView.as_view(),
         name="search_transfers",
     ),
 
-    # Final generated trip plan with selected flight, hotel/address, and routes.
-    # Example: POST /api/chat/generate-trip-plan/
+    # Route/transport plan generation.
     path(
         "generate-trip-plan/",
         GenerateTripPlanView.as_view(),
@@ -77,50 +69,29 @@ urlpatterns = [
     ),
 
     # ------------------------------------------------------------
-    # Extended travel data endpoints
+    # Extended itinerary builder endpoints
     # ------------------------------------------------------------
 
-    # Google Places search:
-    # restaurants, attractions, and things to do.
-    # Example: POST /api/chat/places/
-    path(
-        "places/",
-        SearchPlacesView.as_view(),
-        name="search_places",
-    ),
+    # Google Places restaurants / attractions / things to do.
+    path("places/", SearchPlacesView.as_view(), name="search_places"),
 
-    # Viator tours / activities search.
-    # Uses mock data when VIATOR_API_KEY is missing.
-    # Example: POST /api/chat/tours/
-    path(
-        "tours/",
-        SearchToursView.as_view(),
-        name="search_tours",
-    ),
+    # Viator tours, with mock fallback while Viator is not configured.
+    path("tours/", SearchToursView.as_view(), name="search_tours"),
 
-    # Car rental search.
-    # Currently returns mock-style data until a real car provider is connected.
-    # Example: POST /api/chat/car-rental/
+    # Car rental offers. Currently mock/demo until a real provider is connected.
     path(
         "car-rental/",
         SearchCarRentalView.as_view(),
         name="search_car_rental",
     ),
 
-    # AI-generated day-by-day city itinerary.
-    # Example: POST /api/chat/itinerary/
+    # AI day-by-day itinerary.
     path(
         "itinerary/",
         GenerateItineraryView.as_view(),
         name="generate_itinerary",
     ),
 
-    # AI recommendation endpoint.
-    # This is useful for filtering repetitive results like many similar chain restaurants.
-    # Example: POST /api/chat/recommend/
-    path(
-        "recommend/",
-        AIRecommendView.as_view(),
-        name="ai_recommend",
-    ),
+    # AI recommendation/refinement endpoint.
+    path("recommend/", AIRecommendView.as_view(), name="ai_recommend"),
 ]
