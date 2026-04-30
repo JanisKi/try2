@@ -57,6 +57,11 @@ MIDDLEWARE = [
 
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:5173",
+    "http://127.0.0.1:5173",
+
+    # Vite may use 5174 when 5173 is already busy.
+    "http://localhost:5174",
+    "http://127.0.0.1:5174",
 ]
 
 ROOT_URLCONF = "travelapp.urls"  # Root URL config

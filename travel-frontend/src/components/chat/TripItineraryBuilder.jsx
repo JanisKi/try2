@@ -1201,7 +1201,214 @@ function buildReturnTravelItems({ selectedOffer, transportLegs, adults }) {
     }),
   ];
 }
+/**
+ * Convert "09:30" or "9:30 AM" into minutes after midnight.
+ */
+function parseClockTimeToMinutes(value) {
+  if (!value) return null;
 
+  const text = String(value).trim().toLowerCase();
+
+  const amPmMatch = text.match(/^(\d{1,2}):(\d{2})\s*(am|pm)$/);
+  if (amPmMatch) {
+    let hours = Number(amPmMatch[1]);
+    const minutes = Number(amPmMatch[2]);
+    const period = amPmMatch[3];
+
+    if (period === "pm" && hours !== 12) hours += 12;
+    if (period === "am" && hours === 12) hours = 0;
+
+    return hours * 60 + minutes;
+  }
+
+  const match = text.match(/^(\d{1,2}):(\d{2})$/);
+  if (!match) return null;
+
+  return Number(match[1]) * 60 + Number(match[2]);
+}
+
+/**
+ * Convert minutes after midnight into "HH:MM".
+ */
+function formatMinutesAsTime(totalMinutes) {
+  if (totalMinutes === null || totalMinutes === undefined) return "";
+
+  const safeMinutes = Math.max(0, Math.min(24 * 60 - 1, Math.round(totalMinutes)));
+  const hours = Math.floor(safeMinutes / 60);
+  const minutes = safeMinutes % 60;
+
+  return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`;
+}
+
+/**
+ * Estimate how long a planned item takes.
+ *
+ * This is MVP logic. Later, real duration can come from Viator/ticket APIs.
+ */
+function estimateItemDurationMinutes(item) {
+  const type = String(item?.type || "").toLowerCase();
+
+  if (type === "restaurant") return 90;
+  if (type === "tour") return 180;
+  if (type === "attraction") return 120;
+  if (type === "activity") return 120;
+  if (type === "custom") return 90;
+
+  return 60;
+}
+
+/**
+ * Check whether an item is a normal sightseeing/food item.
+ */
+function isSightseeingOrFoodItem(item) {
+  const type = String(item?.type || "").toLowerCase();
+
+  return ["restaurant", "tour", "attraction", "activity", "custom"].includes(type);
+}
+
+/**
+ * Estimate when an item finishes.
+ */
+function getItemFinishMinutes(item) {
+  const start = parseClockTimeToMinutes(item?.time);
+
+  if (start === null) return null;
+
+  return start + estimateItemDurationMinutes(item);
+}
+
+/**
+ * Get the first "leave hotel for airport" item from return travel timeline.
+ */
+function getLeaveHotelForAirportItem(returnTravelItems) {
+  return returnTravelItems.find((item) => {
+    const type = String(item?.type || "").toLowerCase();
+    const name = String(item?.name || "").toLowerCase();
+
+    return type === "transport" && name.includes("leave hotel");
+  });
+}
+
+/**
+ * Build a link from the last planned activity back to the hotel/destination.
+ */
+function buildReturnToHotelLink(lastActivity, destinationCity, hotelAddress) {
+  const origin =
+    lastActivity?.address ||
+    [lastActivity?.name, destinationCity].filter(Boolean).join(" ");
+
+  if (!origin || !hotelAddress) return "";
+
+  return buildGoogleMapsDirectionsUrl(origin, hotelAddress);
+}
+
+/**
+ * Clean up the final day so it does not contain impossible activities
+ * right before airport departure.
+ *
+ * Example:
+ * If the user must leave hotel at 11:30, we should not keep:
+ * - 11:30 restaurant
+ * - 12:30 tour
+ *
+ * We keep only items that finish early enough, then add:
+ * - Return to hotel / pick up luggage
+ * - Leave hotel for airport
+ * - Airport / flight timeline
+ */
+function prepareFinalDayForReturnTravel({
+  finalDay,
+  returnTravelItems,
+  destinationCity,
+  hotelAddress,
+  destinationCity,
+  hotelAddress,
+}) {
+  if (!finalDay || returnTravelItems.length === 0) return finalDay;
+
+  const leaveHotelItem = getLeaveHotelForAirportItem(returnTravelItems);
+  const leaveHotelMinutes = parseClockTimeToMinutes(leaveHotelItem?.time);
+
+  if (leaveHotelMinutes === null) {
+    return {
+      ...finalDay,
+      items: [...finalDay.items, ...returnTravelItems],
+    };
+  }
+
+  // Keep enough time to return to hotel, collect bags, and avoid stress.
+  const returnToHotelMinutes = 45;
+  const luggagePickupBufferMinutes = 20;
+  const safetyBufferMinutes = 15;
+
+  const latestActivityFinish =
+    leaveHotelMinutes -
+    returnToHotelMinutes -
+    luggagePickupBufferMinutes -
+    safetyBufferMinutes;
+
+  const keptItems = finalDay.items.filter((item) => {
+    if (!isSightseeingOrFoodItem(item)) return false;
+
+    const finishMinutes = getItemFinishMinutes(item);
+
+    // If we cannot understand the time, keep it out of the final day to avoid risk.
+    if (finishMinutes === null) return false;
+
+    return finishMinutes <= latestActivityFinish;
+  });
+
+  const lastKeptActivity = keptItems[keptItems.length - 1];
+
+  const returnToHotelTime = formatMinutesAsTime(
+    leaveHotelMinutes - returnToHotelMinutes - luggagePickupBufferMinutes,
+  );
+
+  const pickupTime = formatMinutesAsTime(leaveHotelMinutes - luggagePickupBufferMinutes);
+
+  const finalItems = [...keptItems];
+
+  if (lastKeptActivity) {
+    finalItems.push(
+      makeTravelItem({
+        time: returnToHotelTime,
+        type: "transport",
+        name: "Return to hotel / destination",
+        description:
+          "Return from your last activity to the hotel/destination so you can collect luggage before going to the airport.",
+        link: buildReturnToHotelLink(lastKeptActivity, destinationCity, hotelAddress),
+      }),
+    );
+  } else {
+    finalItems.push(
+      makeTravelItem({
+        time: "",
+        type: "note",
+        name: "Keep this day light before departure",
+        description:
+          "Your return flight timing does not leave enough safe time for scheduled sightseeing before airport travel. You can still add something manually if you want.",
+      }),
+    );
+  }
+
+  finalItems.push(
+    makeTravelItem({
+      time: pickupTime,
+      type: "hotel",
+      name: "Pick up luggage",
+      description:
+        "Collect your luggage and prepare to leave for the airport.",
+    }),
+  );
+
+  finalItems.push(...returnTravelItems);
+
+  return {
+    ...finalDay,
+    title: finalDay.title || "Departure day",
+    items: finalItems,
+  };
+}
 /**
  * Build the real visible day plan.
  *
@@ -1216,6 +1423,8 @@ function applyTravelTimelineToDays({
   selectedOffer,
   transportLegs,
   adults,
+  destinationCity,
+  hotelAddress,
 }) {
   const firstOutbound = getFirstOutboundSegment(selectedOffer);
   const lastOutbound = getLastOutboundSegment(selectedOffer);
@@ -1291,11 +1500,15 @@ function applyTravelTimelineToDays({
     if (returnTravelItems.length > 0 && allDays.length > 0) {
       const finalIndex = allDays.length - 1;
 
-      allDays[finalIndex] = {
+      allDays[finalIndex] = prepareFinalDayForReturnTravel({
+        finalDay: {
         ...allDays[finalIndex],
         date: allDays[finalIndex].date || returnDateLabel,
-        items: [...allDays[finalIndex].items, ...returnTravelItems],
-      };
+        },
+        returnTravelItems,
+        destinationCity: "",
+        hotelAddress: "",
+      });
     }
 
     return allDays;
@@ -1326,12 +1539,16 @@ function applyTravelTimelineToDays({
   if (returnTravelItems.length > 0 && normalDays.length > 0) {
     const finalIndex = normalDays.length - 1;
 
-    normalDays[finalIndex] = {
-      ...normalDays[finalIndex],
-      date: normalDays[finalIndex].date || returnDateLabel,
-      items: [...normalDays[finalIndex].items, ...returnTravelItems],
-    };
-  }
+    normalDays[finalIndex] = prepareFinalDayForReturnTravel({
+        finalDay: {
+        ...normalDays[finalIndex],
+        date: normalDays[finalIndex].date || returnDateLabel,
+        },
+        returnTravelItems,
+        destinationCity: "",
+        hotelAddress: "",
+      });
+    }
 
   return normalDays;
 }
@@ -1887,6 +2104,8 @@ export default function TripItineraryBuilder({
           selectedOffer,
           transportLegs,
           adults,
+          destinationCity,
+          hotelAddress: arrivalDestinationAddress,
         });
 
         setDays(timelineDays);
@@ -1920,6 +2139,8 @@ export default function TripItineraryBuilder({
         selectedOffer,
         transportLegs,
         adults,
+        destinationCity,
+        hotelAddress: arrivalDestinationAddress,
       });
 
       setDays(timelineDays);
@@ -1947,6 +2168,8 @@ export default function TripItineraryBuilder({
           selectedOffer,
           transportLegs,
           adults,
+          destinationCity,
+          hotelAddress: arrivalDestinationAddress,
         });
 
         setDays(timelineDays);
