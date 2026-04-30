@@ -1,28 +1,23 @@
 // travel-frontend/src/components/chat/TripItineraryBuilder.jsx
 
-import React, { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { api } from "../../api";
 
 /**
  * Editable trip itinerary builder.
  *
- * This is the main "nice UI" after the user presses Generate trip plan.
+ * This component appears after the user presses "Generate trip plan".
  *
  * It combines:
- * - selected flight information
- * - hotel / destination address
+ * - selected flight details
+ * - hotel / stay details
  * - airport transport / route plan
  * - restaurants from Google Places
  * - attractions from Google Places
  * - tours from Viator later, or mock data for now
- * - estimated prices
+ * - estimated activity/food prices
  * - editable day-by-day plan
  * - printable PDF export
- *
- * Important:
- * Google Places often does NOT provide exact ticket/meal prices.
- * For those items we estimate price from priceLevel/type.
- * Viator usually provides real tour pricing once the real API key is connected.
  */
 
 /**
@@ -47,23 +42,26 @@ function toNumber(value, fallback = 0) {
 }
 
 /**
- * Escape text before placing it into the printable PDF HTML.
- *
- * This prevents broken HTML if a place name contains symbols like < or >.
+ * Escape text before inserting it into printable HTML.
  */
 function escapeHtml(value) {
-  return String(value ?? "")
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#039;");
+  const text = String(value ?? "");
+
+  return text.replace(/[&<>"']/g, (char) => {
+    const entities = {
+      "&": "&amp;",
+      "<": "&lt;",
+      ">": "&gt;",
+      '"': "&quot;",
+      "'": "&#039;",
+    };
+
+    return entities[char] || char;
+  });
 }
 
 /**
- * Calculate trip length from flight dates.
- *
- * If the return date is missing, default to 3 days.
+ * Calculate trip length from departure and return dates.
  */
 function calculateTripDays(departureDate, returnDate) {
   if (!departureDate || !returnDate) return 3;
@@ -103,17 +101,7 @@ function getItemName(item) {
 }
 
 /**
- * Get useful external link for item.
- *
- * Google Places can provide:
- * - google_maps_url
- * - googleMapsUri
- * - websiteUri
- *
- * Viator can provide:
- * - booking_url
- * - product_url
- * - webURL
+ * Get useful external link for a place/activity.
  */
 function getItemLink(item) {
   return (
@@ -130,19 +118,12 @@ function getItemLink(item) {
 /**
  * Convert Google price level into rough EUR estimate.
  *
- * Google Places often returns priceLevel as strings like:
- * - PRICE_LEVEL_FREE
- * - PRICE_LEVEL_INEXPENSIVE
- * - PRICE_LEVEL_MODERATE
- * - PRICE_LEVEL_EXPENSIVE
- * - PRICE_LEVEL_VERY_EXPENSIVE
- *
- * Some older/normalized data may use numbers 0-4.
+ * Google Places usually does not provide exact ticket/meal prices.
+ * This keeps the budget useful for MVP planning.
  */
 function estimateFromPriceLevel(priceLevel, type) {
   const normalized = String(priceLevel ?? "").toUpperCase();
 
-  // Restaurants are usually per person meal estimates.
   if (type === "restaurant") {
     if (normalized.includes("FREE") || priceLevel === 0) return 0;
     if (normalized.includes("INEXPENSIVE") || priceLevel === 1) return 15;
@@ -150,11 +131,9 @@ function estimateFromPriceLevel(priceLevel, type) {
     if (normalized.includes("EXPENSIVE") || priceLevel === 3) return 55;
     if (normalized.includes("VERY_EXPENSIVE") || priceLevel === 4) return 90;
 
-    // Default restaurant estimate when Google does not provide a price level.
     return 30;
   }
 
-  // Attractions are often free or ticketed.
   if (type === "attraction") {
     if (normalized.includes("FREE") || priceLevel === 0) return 0;
     if (normalized.includes("INEXPENSIVE") || priceLevel === 1) return 10;
@@ -162,7 +141,6 @@ function estimateFromPriceLevel(priceLevel, type) {
     if (normalized.includes("EXPENSIVE") || priceLevel === 3) return 45;
     if (normalized.includes("VERY_EXPENSIVE") || priceLevel === 4) return 70;
 
-    // Default paid attraction estimate.
     return 20;
   }
 
@@ -170,14 +148,13 @@ function estimateFromPriceLevel(priceLevel, type) {
 }
 
 /**
- * Try to detect free public places from name/type.
- *
- * This is only a rough MVP estimate.
- * Later you can improve this with a real ticket provider API.
+ * Detect attractions that are likely free.
  */
 function looksFreeAttraction(item) {
   const name = getItemName(item).toLowerCase();
-  const types = Array.isArray(item?.types) ? item.types.join(" ").toLowerCase() : "";
+  const types = Array.isArray(item?.types)
+    ? item.types.join(" ").toLowerCase()
+    : "";
 
   return (
     name.includes("park") ||
@@ -185,20 +162,16 @@ function looksFreeAttraction(item) {
     name.includes("market") ||
     name.includes("bridge") ||
     name.includes("street") ||
-    types.includes("park") ||
-    types.includes("tourist_attraction")
+    types.includes("park")
   );
 }
 
 /**
  * Estimate item price in EUR.
- *
- * This keeps budget calculation useful even when provider data has no exact price.
  */
 function estimateItemPriceEur(item, type, adults = 1) {
   const adultCount = Math.max(1, Number(adults || 1));
 
-  // 1. Real/normalized explicit price fields.
   const explicitPrice =
     item?.price_total_eur ??
     item?.estimated_price_eur ??
@@ -212,12 +185,10 @@ function estimateItemPriceEur(item, type, adults = 1) {
     return Math.max(0, toNumber(explicitPrice) * (type === "tour" ? adultCount : 1));
   }
 
-  // 2. Viator/mock tours normally cost per person.
   if (type === "tour") {
     return 45 * adultCount;
   }
 
-  // 3. Restaurants/attractions can use Google priceLevel.
   const priceLevel = item?.priceLevel ?? item?.price_level;
 
   if (type === "restaurant") {
@@ -233,19 +204,18 @@ function estimateItemPriceEur(item, type, adults = 1) {
 }
 
 /**
- * Create Google Maps directions link.
+ * Build Google Maps directions link.
  */
 function buildGoogleMapsDirectionsUrl(origin, destination) {
   if (!origin || !destination) return "";
 
-  const originEncoded = encodeURIComponent(origin);
-  const destinationEncoded = encodeURIComponent(destination);
-
-  return `https://www.google.com/maps/dir/?api=1&origin=${originEncoded}&destination=${destinationEncoded}`;
+  return `https://www.google.com/maps/dir/?api=1&origin=${encodeURIComponent(
+    origin,
+  )}&destination=${encodeURIComponent(destination)}`;
 }
 
 /**
- * Create a normalized editable itinerary item.
+ * Create one normalized editable itinerary item.
  */
 function makeItem({ time, type, item, fallbackName, adults }) {
   const estimatedPriceEur = estimateItemPriceEur(item, type, adults);
@@ -263,7 +233,11 @@ function makeItem({ time, type, item, fallbackName, adults }) {
       item?.tips ||
       "",
     rating: item?.rating || null,
-    review_count: item?.review_count || item?.user_ratings_total || item?.userRatingCount || null,
+    review_count:
+      item?.review_count ||
+      item?.user_ratings_total ||
+      item?.userRatingCount ||
+      null,
     address: item?.address || item?.formattedAddress || "",
     link: getItemLink(item),
     estimated_price_eur: estimatedPriceEur,
@@ -278,7 +252,7 @@ function makeItem({ time, type, item, fallbackName, adults }) {
 }
 
 /**
- * Build random editable days from pools of restaurants/attractions/tours.
+ * Build random editable days from available pools.
  */
 function buildRandomDays(dayCount, pools, adults = 1) {
   const safeDayCount = Math.max(1, Math.min(Number(dayCount || 3), 14));
@@ -337,7 +311,7 @@ function buildRandomDays(dayCount, pools, adults = 1) {
 }
 
 /**
- * Convert AI itinerary into editable frontend days.
+ * Convert backend AI itinerary into editable frontend days.
  */
 function normalizeAiItinerary(aiResponse, fallbackDays, pools, adults = 1) {
   const itinerary = aiResponse?.itinerary || aiResponse;
@@ -373,7 +347,7 @@ function normalizeAiItinerary(aiResponse, fallbackDays, pools, adults = 1) {
 }
 
 /**
- * Get replacement pool by item type.
+ * Choose the correct replacement pool for an itinerary item.
  */
 function getPoolByType(type, pools) {
   if (type === "restaurant") return pools.restaurants;
@@ -384,7 +358,7 @@ function getPoolByType(type, pools) {
 }
 
 /**
- * Extract flight segment details from Amadeus-like selectedOffer.
+ * Extract flight segment details from Amadeus-like selected offer.
  */
 function extractFlightSegments(selectedOffer) {
   const itineraries = selectedOffer?.itineraries || [];
@@ -408,10 +382,10 @@ function extractFlightSegments(selectedOffer) {
 }
 
 /**
- * Try to get a useful "leave home by" time.
+ * Estimate "leave home by" time.
  *
- * For MVP this uses the first flight departure time and subtracts 3 hours.
- * Later, you can calculate this from actual route duration + airport buffer.
+ * MVP logic:
+ * first flight departure time minus 3 hours.
  */
 function estimateLeaveHomeTime(selectedOffer) {
   const segments = extractFlightSegments(selectedOffer);
@@ -429,25 +403,30 @@ function estimateLeaveHomeTime(selectedOffer) {
 }
 
 /**
- * Extract route/transport legs from generated route plan.
+ * Check whether a route-like object is an internal step.
  *
- * Backend structures can evolve, so this function searches recursively
- * for objects that look like route legs.
+ * We do NOT want to show labels like:
+ * - leg2.steps[0]
+ * - leg3.steps[0]
+ */
+function isInternalStepPath(path) {
+  return path.includes(".steps") || path.includes("steps[");
+}
+
+/**
+ * Extract clean transport legs from backend route plan.
+ *
+ * The old version walked too deeply and displayed internal Google step data.
+ * This version only keeps objects that have a clear origin/destination or explicit map link.
  */
 function extractRouteLegs(routePlan, startAddress, destinationAddress) {
   const found = [];
 
-  function walk(value, path = "") {
-    if (!value) return;
+  function addLeg(value, path = "") {
+    if (!value || typeof value !== "object") return;
+    if (isInternalStepPath(path)) return;
 
-    if (Array.isArray(value)) {
-      value.forEach((item, index) => walk(item, `${path}[${index}]`));
-      return;
-    }
-
-    if (typeof value !== "object") return;
-
-    const maybeOrigin =
+    const origin =
       value.origin ||
       value.from ||
       value.start ||
@@ -456,7 +435,7 @@ function extractRouteLegs(routePlan, startAddress, destinationAddress) {
       value.from_address ||
       "";
 
-    const maybeDestination =
+    const destination =
       value.destination ||
       value.to ||
       value.end ||
@@ -465,54 +444,76 @@ function extractRouteLegs(routePlan, startAddress, destinationAddress) {
       value.to_address ||
       "";
 
-    const hasRouteLikeData =
-      maybeOrigin ||
-      maybeDestination ||
-      value.duration ||
+    const link = value.google_maps_url || value.maps_url || value.map_url || "";
+
+    const hasUsefulRoute =
+      (origin && destination) ||
+      link ||
       value.duration_text ||
-      value.distance ||
       value.distance_text ||
+      value.duration ||
+      value.distance;
+
+    if (!hasUsefulRoute) return;
+
+    const label =
+      value.label ||
+      value.title ||
+      value.name ||
       value.mode ||
+      value.transport_mode ||
       value.type ||
-      value.google_maps_url ||
-      value.maps_url;
+      "Transport leg";
 
-    if (hasRouteLikeData) {
-      const label =
-        value.label ||
-        value.title ||
-        value.name ||
-        value.type ||
-        value.mode ||
-        path ||
-        "Transport leg";
-
-      const origin = String(maybeOrigin || "");
-      const destination = String(maybeDestination || "");
-
-      found.push({
-        label,
-        origin,
-        destination,
-        mode: value.mode || value.transport_mode || value.type || "",
-        duration: value.duration_text || value.duration || "",
-        distance: value.distance_text || value.distance || "",
-        link:
-          value.google_maps_url ||
-          value.maps_url ||
-          buildGoogleMapsDirectionsUrl(origin, destination),
-      });
-    }
-
-    Object.entries(value).forEach(([key, child]) => walk(child, path ? `${path}.${key}` : key));
+    found.push({
+      label,
+      origin: String(origin || ""),
+      destination: String(destination || ""),
+      mode: value.mode || value.transport_mode || value.type || "",
+      duration: value.duration_text || value.duration || "",
+      distance: value.distance_text || value.distance || "",
+      link: link || buildGoogleMapsDirectionsUrl(origin, destination),
+    });
   }
 
-  walk(routePlan);
+  /**
+   * Prefer known clean backend shapes first.
+   */
+  const possibleLegArrays = [
+    routePlan?.legs,
+    routePlan?.route_legs,
+    routePlan?.routes,
+    routePlan?.transport_legs,
+    routePlan?.plan?.legs,
+    routePlan?.trip_plan?.legs,
+  ];
 
-  // If backend route shape has no obvious legs, provide at least a useful fallback.
+  possibleLegArrays.forEach((maybeArray) => {
+    if (Array.isArray(maybeArray)) {
+      maybeArray.forEach((item, index) => addLeg(item, `legs[${index}]`));
+    }
+  });
+
+  /**
+   * If no clean list exists, inspect only top-level objects.
+   * This prevents internal step labels from appearing.
+   */
+  if (found.length === 0 && routePlan && typeof routePlan === "object") {
+    Object.entries(routePlan).forEach(([key, value]) => {
+      if (Array.isArray(value)) {
+        value.forEach((item, index) => addLeg(item, `${key}[${index}]`));
+      } else if (value && typeof value === "object") {
+        addLeg(value, key);
+      }
+    });
+  }
+
+  /**
+   * Last fallback: make at least one useful Google Maps link.
+   */
   if (found.length === 0 && startAddress && destinationAddress) {
     found.push({
-      label: "Home / start address to destination",
+      label: "Start address to destination",
       origin: startAddress,
       destination: destinationAddress,
       mode: "",
@@ -522,19 +523,21 @@ function extractRouteLegs(routePlan, startAddress, destinationAddress) {
     });
   }
 
-  // Avoid showing duplicate recursive route objects.
   const seen = new Set();
 
   return found.filter((leg) => {
+    if (!leg.origin && !leg.destination && !leg.link) return false;
+
     const key = `${leg.label}-${leg.origin}-${leg.destination}-${leg.duration}-${leg.distance}`;
     if (seen.has(key)) return false;
+
     seen.add(key);
     return true;
   });
 }
 
 /**
- * Calculate total estimated cost from itinerary days.
+ * Calculate total estimated itinerary activity/food cost.
  */
 function calculateItineraryEstimate(days) {
   return days.reduce((dayTotal, day) => {
@@ -548,7 +551,56 @@ function calculateItineraryEstimate(days) {
 }
 
 /**
- * Build printable PDF HTML.
+ * Get known fixed trip costs:
+ * - flight
+ * - hotel
+ * - selected transfers
+ */
+function getKnownTripCosts({
+  selectedOffer,
+  selectedHotel,
+  selectedArrivalTransfer,
+  selectedReturnTransfer,
+}) {
+  const flightCost = toNumber(selectedOffer?.price?.total);
+  const hotelCost = toNumber(
+    selectedHotel?.price_total_eur ?? selectedHotel?.price_total,
+  );
+  const arrivalTransferCost = toNumber(selectedArrivalTransfer?.price_total_eur);
+  const returnTransferCost = toNumber(selectedReturnTransfer?.price_total_eur);
+
+  return {
+    flightCost,
+    hotelCost,
+    arrivalTransferCost,
+    returnTransferCost,
+    transportCost: arrivalTransferCost + returnTransferCost,
+    knownTotal:
+      flightCost + hotelCost + arrivalTransferCost + returnTransferCost,
+  };
+}
+
+/**
+ * Simple reusable collapsible section.
+ */
+function CollapsibleSection({ title, subtitle, defaultOpen = false, children }) {
+  return (
+    <details style={styles.collapsible} open={defaultOpen}>
+      <summary style={styles.collapsibleSummary}>
+        <div>
+          <strong>{title}</strong>
+          {subtitle && <span style={styles.collapsibleSubtitle}>{subtitle}</span>}
+        </div>
+        <span style={styles.chevron}>Open / close</span>
+      </summary>
+
+      <div style={styles.collapsibleContent}>{children}</div>
+    </details>
+  );
+}
+
+/**
+ * Build printable HTML for browser PDF export.
  */
 function buildPrintableHtml({
   destinationCity,
@@ -561,14 +613,14 @@ function buildPrintableHtml({
     ? flightSegments
         .map(
           (segment) => `
-          <tr>
-            <td>${escapeHtml(segment.direction)}</td>
-            <td>${escapeHtml(segment.carrierCode)} ${escapeHtml(segment.number)}</td>
-            <td>${escapeHtml(segment.departureAirport)}<br>${escapeHtml(segment.departureTime)}</td>
-            <td>${escapeHtml(segment.arrivalAirport)}<br>${escapeHtml(segment.arrivalTime)}</td>
-            <td>${escapeHtml(segment.duration)}</td>
-          </tr>
-        `,
+            <tr>
+              <td>${escapeHtml(segment.direction)}</td>
+              <td>${escapeHtml(segment.carrierCode)} ${escapeHtml(segment.number)}</td>
+              <td>${escapeHtml(segment.departureAirport)}<br>${escapeHtml(segment.departureTime)}</td>
+              <td>${escapeHtml(segment.arrivalAirport)}<br>${escapeHtml(segment.arrivalTime)}</td>
+              <td>${escapeHtml(segment.duration)}</td>
+            </tr>
+          `,
         )
         .join("")
     : `<tr><td colspan="5">No flight segment details available.</td></tr>`;
@@ -577,23 +629,21 @@ function buildPrintableHtml({
     ? transportLegs
         .map(
           (leg) => `
-          <li>
-            <strong>${escapeHtml(leg.label)}</strong>
-            ${leg.mode ? `<span class="type">${escapeHtml(leg.mode)}</span>` : ""}
-            <p>
-              ${escapeHtml(leg.origin || "-")} → ${escapeHtml(leg.destination || "-")}
-            </p>
-            <p class="muted">
-              ${leg.duration ? `Duration: ${escapeHtml(leg.duration)} ` : ""}
-              ${leg.distance ? `Distance: ${escapeHtml(leg.distance)}` : ""}
-            </p>
-            ${
-              leg.link
-                ? `<a href="${escapeHtml(leg.link)}" target="_blank">Open route in Google Maps</a>`
-                : ""
-            }
-          </li>
-        `,
+            <li>
+              <strong>${escapeHtml(leg.label)}</strong>
+              ${leg.mode ? `<span class="type">${escapeHtml(leg.mode)}</span>` : ""}
+              <p>${escapeHtml(leg.origin || "-")} → ${escapeHtml(leg.destination || "-")}</p>
+              <p class="muted">
+                ${leg.duration ? `Duration: ${escapeHtml(leg.duration)} ` : ""}
+                ${leg.distance ? `Distance: ${escapeHtml(leg.distance)}` : ""}
+              </p>
+              ${
+                leg.link
+                  ? `<a href="${escapeHtml(leg.link)}" target="_blank">Open route in Google Maps</a>`
+                  : ""
+              }
+            </li>
+          `,
         )
         .join("")
     : `<li>No transport route details available.</li>`;
@@ -603,26 +653,28 @@ function buildPrintableHtml({
       const itemHtml = day.items
         .map(
           (item) => `
-          <li>
-            <strong>${escapeHtml(item.time || "")} ${escapeHtml(item.name || "")}</strong>
-            <span class="type">${escapeHtml(item.type || "")}</span>
-            <span class="price">${formatMoney(item.estimated_price_eur)}</span>
-            ${item.description ? `<p>${escapeHtml(item.description)}</p>` : ""}
-            ${item.address ? `<p class="muted">${escapeHtml(item.address)}</p>` : ""}
-            ${
-              item.rating || item.review_count
-                ? `<p class="muted">${item.rating ? `⭐ ${escapeHtml(item.rating)}` : ""}${
-                    item.review_count ? ` · ${escapeHtml(item.review_count)} reviews` : ""
-                  }</p>`
-                : ""
-            }
-            ${
-              item.link
-                ? `<a href="${escapeHtml(item.link)}" target="_blank">Open booking / map link</a>`
-                : ""
-            }
-          </li>
-        `,
+            <li>
+              <strong>${escapeHtml(item.time || "")} ${escapeHtml(item.name || "")}</strong>
+              <span class="type">${escapeHtml(item.type || "")}</span>
+              <span class="price">${formatMoney(item.estimated_price_eur)}</span>
+              ${item.description ? `<p>${escapeHtml(item.description)}</p>` : ""}
+              ${item.address ? `<p class="muted">${escapeHtml(item.address)}</p>` : ""}
+              ${
+                item.rating || item.review_count
+                  ? `<p class="muted">${item.rating ? `⭐ ${escapeHtml(item.rating)}` : ""}${
+                      item.review_count
+                        ? ` · ${escapeHtml(item.review_count)} reviews`
+                        : ""
+                    }</p>`
+                  : ""
+              }
+              ${
+                item.link
+                  ? `<a href="${escapeHtml(item.link)}" target="_blank">Open booking / map link</a>`
+                  : ""
+              }
+            </li>
+          `,
         )
         .join("");
 
@@ -648,29 +700,32 @@ function buildPrintableHtml({
             margin: 32px;
             line-height: 1.45;
           }
+
           h1 {
             margin-bottom: 4px;
           }
-          h2 {
-            margin-top: 0;
-          }
+
           a {
             color: #1d4ed8;
           }
+
           table {
             width: 100%;
             border-collapse: collapse;
             margin-top: 8px;
           }
+
           th, td {
             border: 1px solid #d1d5db;
             padding: 8px;
             text-align: left;
             vertical-align: top;
           }
+
           th {
             background: #f3f4f6;
           }
+
           .summary {
             padding: 12px;
             border: 1px solid #d1d5db;
@@ -678,19 +733,23 @@ function buildPrintableHtml({
             margin: 16px 0 24px;
             background: #f9fafb;
           }
+
           .section {
             page-break-inside: avoid;
             margin-top: 24px;
           }
+
           .day {
             page-break-inside: avoid;
             border-top: 2px solid #2563eb;
             padding-top: 12px;
             margin-top: 24px;
           }
+
           li {
             margin-bottom: 14px;
           }
+
           .type {
             display: inline-block;
             margin-left: 8px;
@@ -700,21 +759,25 @@ function buildPrintableHtml({
             color: #1e40af;
             font-size: 12px;
           }
+
           .price {
             display: inline-block;
             margin-left: 8px;
             color: #047857;
             font-weight: bold;
           }
+
           .muted {
             color: #6b7280;
             margin: 4px 0;
           }
+
           .budget {
             font-size: 16px;
           }
         </style>
       </head>
+
       <body>
         <h1>${escapeHtml(destinationCity)} Trip Plan</h1>
 
@@ -722,15 +785,13 @@ function buildPrintableHtml({
           <p><strong>Trip length:</strong> ${escapeHtml(summary.tripDays)} day(s)</p>
           <p><strong>Stay address:</strong> ${escapeHtml(summary.arrivalDestinationAddress || "-")}</p>
           <p><strong>Leave home by:</strong> ${escapeHtml(summary.leaveHomeTime || "Check route and airport timing")}</p>
-          <p class="budget"><strong>Starting remaining budget before activities:</strong> ${formatMoney(
-            summary.remainingBudgetBeforeActivities,
-          )}</p>
-          <p class="budget"><strong>Estimated activities + food cost:</strong> ${formatMoney(
-            summary.estimatedActivitiesCost,
-          )}</p>
-          <p class="budget"><strong>Estimated remaining budget after itinerary:</strong> ${formatMoney(
-            summary.remainingBudgetAfterActivities,
-          )}</p>
+
+          <p class="budget"><strong>Flight cost:</strong> ${formatMoney(summary.flightCost)}</p>
+          <p class="budget"><strong>Hotel cost:</strong> ${formatMoney(summary.hotelCost)}</p>
+          <p class="budget"><strong>Selected transfer cost:</strong> ${formatMoney(summary.transportCost)}</p>
+          <p class="budget"><strong>Estimated activities + food:</strong> ${formatMoney(summary.estimatedActivitiesCost)}</p>
+          <p class="budget"><strong>Estimated total trip cost:</strong> ${formatMoney(summary.estimatedTotalTripCost)}</p>
+          <p class="budget"><strong>Estimated remaining budget:</strong> ${formatMoney(summary.remainingBudgetAfterActivities)}</p>
         </div>
 
         <section class="section">
@@ -788,7 +849,6 @@ export default function TripItineraryBuilder({
   const [restaurants, setRestaurants] = useState([]);
   const [attractions, setAttractions] = useState([]);
   const [tours, setTours] = useState([]);
-
   const [providerWarnings, setProviderWarnings] = useState([]);
   const [days, setDays] = useState([]);
 
@@ -828,9 +888,27 @@ export default function TripItineraryBuilder({
     return extractRouteLegs(routePlan, startAddress, arrivalDestinationAddress);
   }, [routePlan, startAddress, arrivalDestinationAddress]);
 
+  const knownCosts = useMemo(() => {
+    return getKnownTripCosts({
+      selectedOffer,
+      selectedHotel,
+      selectedArrivalTransfer,
+      selectedReturnTransfer,
+    });
+  }, [
+    selectedOffer,
+    selectedHotel,
+    selectedArrivalTransfer,
+    selectedReturnTransfer,
+  ]);
+
   const estimatedActivitiesCost = useMemo(() => {
     return calculateItineraryEstimate(days);
   }, [days]);
+
+  const estimatedTotalTripCost = useMemo(() => {
+    return knownCosts.knownTotal + estimatedActivitiesCost;
+  }, [knownCosts, estimatedActivitiesCost]);
 
   const estimatedRemainingAfterActivities = useMemo(() => {
     return toNumber(remainingBudget) - estimatedActivitiesCost;
@@ -902,6 +980,7 @@ export default function TripItineraryBuilder({
 
       if (randomizeOnly) {
         setDays(buildRandomDays(tripDays, currentPools, adults));
+        setHasLoadedOnce(true);
         return;
       }
 
@@ -929,23 +1008,29 @@ export default function TripItineraryBuilder({
         "Failed to build itinerary.";
 
       setError(detail);
+
+      if (restaurants.length || attractions.length || tours.length) {
+        setDays(buildRandomDays(tripDays, pools, adults));
+      }
     } finally {
       setLoading(false);
     }
   }
 
   /**
-   * Automatically build itinerary once after route plan exists.
+   * Automatically build itinerary once after transport plan is generated.
    */
   useEffect(() => {
     if (routePlan && !hasLoadedOnce && !loading) {
       loadItineraryData();
     }
+
+    // Intentionally avoid adding loadItineraryData to dependencies.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [routePlan, hasLoadedOnce, loading]);
 
   /**
-   * Replace item with another option from same category.
+   * Replace one item with another from the same pool.
    */
   function replaceItem(dayId, itemId) {
     setDays((prevDays) =>
@@ -976,7 +1061,7 @@ export default function TripItineraryBuilder({
   }
 
   /**
-   * Remove item from a day.
+   * Remove one item.
    */
   function removeItem(dayId, itemId) {
     setDays((prevDays) =>
@@ -992,14 +1077,15 @@ export default function TripItineraryBuilder({
   }
 
   /**
-   * Add custom item with optional estimated cost and link.
+   * Add custom item with optional price and link.
    */
   function addCustomItem(dayId) {
     const name = window.prompt("What would you like to add?");
     if (!name) return;
 
     const time = window.prompt("Time? Example: 16:30", "16:30") || "";
-    const estimatedPrice = window.prompt("Estimated price in EUR? Example: 25", "0") || "0";
+    const estimatedPrice =
+      window.prompt("Estimated price in EUR? Example: 25", "0") || "0";
     const link = window.prompt("Optional link for tickets/map:", "") || "";
 
     setDays((prevDays) =>
@@ -1050,7 +1136,7 @@ export default function TripItineraryBuilder({
   }
 
   /**
-   * Edit an item's estimated price.
+   * Edit estimated item price.
    */
   function editItemPrice(dayId, itemId) {
     const currentItem = days
@@ -1097,8 +1183,11 @@ export default function TripItineraryBuilder({
         tripDays,
         arrivalDestinationAddress,
         leaveHomeTime,
-        remainingBudgetBeforeActivities: remainingBudget,
+        flightCost: knownCosts.flightCost,
+        hotelCost: knownCosts.hotelCost,
+        transportCost: knownCosts.transportCost,
         estimatedActivitiesCost,
+        estimatedTotalTripCost,
         remainingBudgetAfterActivities: estimatedRemainingAfterActivities,
       },
     });
@@ -1127,21 +1216,36 @@ export default function TripItineraryBuilder({
           <p style={styles.eyebrow}>Editable itinerary</p>
           <h2 style={styles.title}>Your trip to {destinationCity || "your destination"}</h2>
           <p style={styles.subtitle}>
-            Build a day-by-day plan with flights, transport, restaurants, attractions,
-            links, estimated costs, and PDF export.
+            Build a day-by-day plan with flights, transport, restaurants,
+            attractions, links, estimated costs, and PDF export.
           </p>
         </div>
 
         <div style={styles.headerActions}>
-          <button type="button" onClick={() => loadItineraryData()} disabled={loading} style={styles.primaryButton}>
+          <button
+            type="button"
+            onClick={() => loadItineraryData()}
+            disabled={loading}
+            style={styles.primaryButton}
+          >
             {loading ? "Building..." : "Rebuild with AI"}
           </button>
 
-          <button type="button" onClick={() => loadItineraryData({ randomizeOnly: true })} disabled={loading} style={styles.secondaryButton}>
+          <button
+            type="button"
+            onClick={() => loadItineraryData({ randomizeOnly: true })}
+            disabled={loading}
+            style={styles.secondaryButton}
+          >
             Randomize all
           </button>
 
-          <button type="button" onClick={downloadPdf} disabled={days.length === 0} style={styles.secondaryButton}>
+          <button
+            type="button"
+            onClick={downloadPdf}
+            disabled={days.length === 0}
+            style={styles.secondaryButton}
+          >
             Download / print PDF
           </button>
         </div>
@@ -1149,23 +1253,37 @@ export default function TripItineraryBuilder({
 
       <div style={styles.summaryGrid}>
         <div style={styles.summaryCard}>
-          <span style={styles.summaryLabel}>Trip length</span>
-          <strong>{tripDays} day(s)</strong>
+          <span style={styles.summaryLabel}>Flight cost</span>
+          <strong>{formatMoney(knownCosts.flightCost)}</strong>
         </div>
 
         <div style={styles.summaryCard}>
-          <span style={styles.summaryLabel}>Budget before activities</span>
-          <strong>{formatMoney(remainingBudget)}</strong>
+          <span style={styles.summaryLabel}>Hotel cost</span>
+          <strong>{formatMoney(knownCosts.hotelCost)}</strong>
         </div>
 
         <div style={styles.summaryCard}>
-          <span style={styles.summaryLabel}>Estimated activities + food</span>
+          <span style={styles.summaryLabel}>Selected transfers</span>
+          <strong>{formatMoney(knownCosts.transportCost)}</strong>
+        </div>
+
+        <div style={styles.summaryCard}>
+          <span style={styles.summaryLabel}>Activities + food estimate</span>
           <strong>{formatMoney(estimatedActivitiesCost)}</strong>
         </div>
 
         <div style={styles.summaryCard}>
+          <span style={styles.summaryLabel}>Estimated total trip cost</span>
+          <strong>{formatMoney(estimatedTotalTripCost)}</strong>
+        </div>
+
+        <div style={styles.summaryCard}>
           <span style={styles.summaryLabel}>Estimated remaining</span>
-          <strong style={{ color: estimatedRemainingAfterActivities < 0 ? "#fca5a5" : "#86efac" }}>
+          <strong
+            style={{
+              color: estimatedRemainingAfterActivities < 0 ? "#fca5a5" : "#86efac",
+            }}
+          >
             {formatMoney(estimatedRemainingAfterActivities)}
           </strong>
         </div>
@@ -1181,9 +1299,11 @@ export default function TripItineraryBuilder({
         </div>
       </div>
 
-      <section style={styles.infoBox}>
-        <h3 style={styles.sectionTitle}>Flight details</h3>
-
+      <CollapsibleSection
+        title="Flight details"
+        subtitle={`${flightSegments.length} segment(s)`}
+        defaultOpen={false}
+      >
         {flightSegments.length === 0 ? (
           <p style={styles.muted}>No flight segment details available.</p>
         ) : (
@@ -1204,11 +1324,13 @@ export default function TripItineraryBuilder({
             ))}
           </div>
         )}
-      </section>
+      </CollapsibleSection>
 
-      <section style={styles.infoBox}>
-        <h3 style={styles.sectionTitle}>Transport / route plan</h3>
-
+      <CollapsibleSection
+        title="Transport / route plan"
+        subtitle={`${transportLegs.length} route leg(s)`}
+        defaultOpen={false}
+      >
         {transportLegs.length === 0 ? (
           <p style={styles.muted}>No route legs found in generated plan.</p>
         ) : (
@@ -1223,15 +1345,21 @@ export default function TripItineraryBuilder({
                 {leg.duration ? `Duration: ${leg.duration} · ` : ""}
                 {leg.distance ? `Distance: ${leg.distance}` : ""}
               </p>
+
               {leg.link && (
-                <a href={leg.link} target="_blank" rel="noreferrer" style={styles.externalLink}>
+                <a
+                  href={leg.link}
+                  target="_blank"
+                  rel="noreferrer"
+                  style={styles.externalLink}
+                >
                   Open route in Google Maps
                 </a>
               )}
             </div>
           ))
         )}
-      </section>
+      </CollapsibleSection>
 
       <label style={styles.label}>Recommendation preferences</label>
       <textarea
@@ -1270,11 +1398,19 @@ export default function TripItineraryBuilder({
               </div>
 
               <div style={styles.dayActions}>
-                <button type="button" onClick={() => randomizeDay(day.id)} style={styles.smallButton}>
+                <button
+                  type="button"
+                  onClick={() => randomizeDay(day.id)}
+                  style={styles.smallButton}
+                >
                   Randomize day
                 </button>
 
-                <button type="button" onClick={() => addCustomItem(day.id)} style={styles.smallButton}>
+                <button
+                  type="button"
+                  onClick={() => addCustomItem(day.id)}
+                  style={styles.smallButton}
+                >
                   Add custom
                 </button>
               </div>
@@ -1293,21 +1429,35 @@ export default function TripItineraryBuilder({
                       </div>
 
                       <div style={styles.itemActions}>
-                        <button type="button" onClick={() => replaceItem(day.id, item.id)} style={styles.linkButton}>
+                        <button
+                          type="button"
+                          onClick={() => replaceItem(day.id, item.id)}
+                          style={styles.linkButton}
+                        >
                           Replace
                         </button>
 
-                        <button type="button" onClick={() => editItemPrice(day.id, item.id)} style={styles.linkButton}>
+                        <button
+                          type="button"
+                          onClick={() => editItemPrice(day.id, item.id)}
+                          style={styles.linkButton}
+                        >
                           Edit price
                         </button>
 
-                        <button type="button" onClick={() => removeItem(day.id, item.id)} style={styles.dangerButton}>
+                        <button
+                          type="button"
+                          onClick={() => removeItem(day.id, item.id)}
+                          style={styles.dangerButton}
+                        >
                           Remove
                         </button>
                       </div>
                     </div>
 
-                    {item.description && <p style={styles.itemDescription}>{item.description}</p>}
+                    {item.description && (
+                      <p style={styles.itemDescription}>{item.description}</p>
+                    )}
 
                     {item.address && <p style={styles.muted}>{item.address}</p>}
 
@@ -1324,7 +1474,12 @@ export default function TripItineraryBuilder({
                     </p>
 
                     {item.link && (
-                      <a href={item.link} target="_blank" rel="noreferrer" style={styles.externalLink}>
+                      <a
+                        href={item.link}
+                        target="_blank"
+                        rel="noreferrer"
+                        style={styles.externalLink}
+                      >
                         Open booking / map link
                       </a>
                     )}
@@ -1414,16 +1569,35 @@ const styles = {
     fontSize: "12px",
     marginBottom: "4px",
   },
-  infoBox: {
+  collapsible: {
     marginTop: "14px",
-    padding: "14px",
     borderRadius: "12px",
     border: "1px solid #334155",
     background: "#0f172a",
+    overflow: "hidden",
   },
-  sectionTitle: {
-    margin: "0 0 10px",
+  collapsibleSummary: {
+    cursor: "pointer",
+    padding: "14px",
+    display: "flex",
+    justifyContent: "space-between",
+    gap: "12px",
+    alignItems: "center",
     color: "#ffffff",
+    background: "#111827",
+  },
+  collapsibleSubtitle: {
+    marginLeft: "10px",
+    color: "#9ca3af",
+    fontSize: "13px",
+    fontWeight: 400,
+  },
+  chevron: {
+    color: "#60a5fa",
+    fontSize: "12px",
+  },
+  collapsibleContent: {
+    padding: "14px",
   },
   flightGrid: {
     display: "grid",
