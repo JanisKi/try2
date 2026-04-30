@@ -19,13 +19,11 @@ import { api } from "../../api";
  * - editable day-by-day plan
  * - printable PDF export
  *
- * Important UX behavior:
+ * UX behavior:
  * - If the outbound flight lands late, Day 1 becomes a travel-only day.
  * - Sightseeing starts the next day.
- * - Airport buffers are included:
- *   - 90 minutes before departure at the airport
- *   - 45 minutes after landing before leaving destination airport
- *   - 30 minutes after return landing before leaving home airport
+ * - Flight / airport / buffer logistics do not show useless Google links or €0 prices.
+ * - Transport items show route links only when a useful Google Maps route exists.
  */
 
 /**
@@ -317,6 +315,64 @@ function getItemLink(item, destinationCity = "") {
     item?.webURL ||
     buildGoogleMapsSearchUrl(getItemName(item), destinationCity)
   );
+}
+
+/**
+ * Logistics items are timeline/planning items, not bookable places.
+ *
+ * We usually do not want generic Google Maps search links for these,
+ * because "Outbound flight RIX → LHR" or "Ready to leave airport"
+ * is not a real place/activity the user needs to research.
+ */
+function isLogisticsItem(item) {
+  return [
+    "flight",
+    "airport",
+    "arrival",
+    "buffer",
+    "hotel",
+    "note",
+  ].includes(String(item?.type || "").toLowerCase());
+}
+
+/**
+ * Transport is also logistics, but it can have a useful route link.
+ */
+function isTransportItem(item) {
+  return String(item?.type || "").toLowerCase() === "transport";
+}
+
+/**
+ * Show price only when it is useful.
+ *
+ * For flight/airport/buffer/logistics items, hiding "0.00 EUR" looks cleaner.
+ */
+function shouldShowItemPrice(item) {
+  if (isLogisticsItem(item)) return false;
+
+  // Transport price is useful only if we estimated a real public transport cost.
+  if (isTransportItem(item)) {
+    return Number(item?.estimated_price_eur || 0) > 0;
+  }
+
+  return true;
+}
+
+/**
+ * Show links only when they are useful.
+ *
+ * - Restaurants/attractions/tours/custom items: always show a maps/booking link.
+ * - Transport items: show only if there is an actual route link.
+ * - Flights/buffers/airport notes: no generic link.
+ */
+function shouldShowItemLink(item) {
+  if (isLogisticsItem(item)) return false;
+
+  if (isTransportItem(item)) {
+    return Boolean(item?.link);
+  }
+
+  return true;
 }
 
 /**
@@ -1281,14 +1337,22 @@ function applyTravelTimelineToDays({
 }
 
 /**
- * Calculate total estimated itinerary activity/food cost.
+ * Calculate estimated activities/food cost only.
+ *
+ * Logistics items are skipped here because:
+ * - flights/hotel/transfers are counted separately
+ * - public transport estimate is counted separately
+ * - flight/airport/buffer logistics should not inflate activities budget
  */
 function calculateItineraryEstimate(days) {
   return days.reduce((dayTotal, day) => {
-    const itemTotal = day.items.reduce(
-      (sum, item) => sum + toNumber(item.estimated_price_eur),
-      0,
-    );
+    const itemTotal = day.items.reduce((sum, item) => {
+      if (isLogisticsItem(item) || isTransportItem(item)) {
+        return sum;
+      }
+
+      return sum + toNumber(item.estimated_price_eur);
+    }, 0);
 
     return dayTotal + itemTotal;
   }, 0);
@@ -1444,6 +1508,8 @@ function buildPrintableHtml({
     .map((day) => {
       const itemHtml = day.items
         .map((item) => {
+          const showPrice = shouldShowItemPrice(item);
+          const showLink = shouldShowItemLink(item);
           const itemLink =
             item.link || buildGoogleMapsSearchUrl(item.name, destinationCity);
 
@@ -1451,7 +1517,7 @@ function buildPrintableHtml({
             <li>
               <strong>${escapeHtml(item.time || "")} ${escapeHtml(item.name || "")}</strong>
               <span class="type">${escapeHtml(item.type || "")}</span>
-              <span class="price">${formatMoney(item.estimated_price_eur)}</span>
+              ${showPrice ? `<span class="price">${formatMoney(item.estimated_price_eur)}</span>` : ""}
               ${item.description ? `<p>${escapeHtml(item.description)}</p>` : ""}
               ${item.address ? `<p class="muted">${escapeHtml(item.address)}</p>` : ""}
               ${
@@ -1463,10 +1529,20 @@ function buildPrintableHtml({
                     }</p>`
                   : ""
               }
-              <p class="muted">Source: ${escapeHtml(item.source_label || "Google Maps search")}</p>
-              <a href="${escapeHtml(itemLink)}" target="_blank">
-                Open in Google Maps / booking page
-              </a>
+              ${
+                showLink
+                  ? `
+                    <p class="muted">Source: ${escapeHtml(item.source_label || "Google Maps search")}</p>
+                    <a href="${escapeHtml(itemLink)}" target="_blank">
+                      ${
+                        isTransportItem(item)
+                          ? "Open route in Google Maps"
+                          : "Open in Google Maps / booking page"
+                      }
+                    </a>
+                  `
+                  : ""
+              }
             </li>
           `;
         })
@@ -2365,28 +2441,34 @@ export default function TripItineraryBuilder({
                       </p>
                     )}
 
-                    <p style={styles.priceLine}>
-                      Estimated price: {formatMoney(item.estimated_price_eur)}{" "}
-                      <span style={styles.muted}>({item.price_note})</span>
-                    </p>
+                    {shouldShowItemPrice(item) && (
+                      <p style={styles.priceLine}>
+                        Estimated price: {formatMoney(item.estimated_price_eur)}{" "}
+                        <span style={styles.muted}>({item.price_note})</span>
+                      </p>
+                    )}
 
-                    <div style={styles.linkRow}>
-                      <span style={styles.sourceText}>
-                        Source: {item.source_label || "Google Maps search"}
-                      </span>
+                    {shouldShowItemLink(item) && (
+                      <div style={styles.linkRow}>
+                        <span style={styles.sourceText}>
+                          Source: {item.source_label || "Google Maps search"}
+                        </span>
 
-                      <a
-                        href={
-                          item.link ||
-                          buildGoogleMapsSearchUrl(item.name, destinationCity)
-                        }
-                        target="_blank"
-                        rel="noreferrer"
-                        style={styles.externalLink}
-                      >
-                        Open in Google Maps / booking page
-                      </a>
-                    </div>
+                        <a
+                          href={
+                            item.link ||
+                            buildGoogleMapsSearchUrl(item.name, destinationCity)
+                          }
+                          target="_blank"
+                          rel="noreferrer"
+                          style={styles.externalLink}
+                        >
+                          {isTransportItem(item)
+                            ? "Open route in Google Maps"
+                            : "Open in Google Maps / booking page"}
+                        </a>
+                      </div>
+                    )}
                   </div>
                 </div>
               ))}
